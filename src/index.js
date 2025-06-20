@@ -1,7 +1,10 @@
+// src/index.js
+
 import { getCustomerByPhone } from './splynx.js';
 import { sendWhatsAppMessage } from './whatsapp.js';
 import { routeCommand } from './commands.js';
 
+// --- CORS helper ---
 function withCORS(resp) {
   resp.headers.set("Access-Control-Allow-Origin", "*");
   resp.headers.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
@@ -9,17 +12,16 @@ function withCORS(resp) {
   return resp;
 }
 
-// Handle preflight
-if (request.method === "OPTIONS") {
-  return withCORS(new Response("OK", { status: 200 }));
-}
-// -----------------------------
-
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
-    // WhatsApp webhook verification
+    // --- Handle CORS preflight for API endpoints ---
+    if (request.method === "OPTIONS" && url.pathname.startsWith("/api/")) {
+      return withCORS(new Response("OK", { status: 200 }));
+    }
+
+    // --- WhatsApp webhook verification (GET) ---
     if (url.pathname === "/webhook" && request.method === "GET") {
       const verify_token = url.searchParams.get("hub.verify_token");
       const challenge = url.searchParams.get("hub.challenge");
@@ -28,7 +30,7 @@ export default {
       return new Response("Forbidden", { status: 403 });
     }
 
-    // WhatsApp webhook: incoming message
+    // --- WhatsApp webhook handler (POST) ---
     if (url.pathname === "/webhook" && request.method === "POST") {
       const payload = await request.json();
       const msgObj = payload.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
@@ -37,63 +39,89 @@ export default {
       const from = msgObj.from;
       const type = msgObj.type;
       let userInput = "";
+      let media_url = null;
+      let location_json = null;
 
-      if (type === "text") userInput = msgObj.text.body.trim();
-      else if (type === "image") userInput = "[Image]";
-      else if (type === "audio") userInput = "[Audio]";
-      else if (type === "document") userInput = "[Document]";
-      else if (type === "location") userInput = `[LOCATION: ${msgObj.location.latitude},${msgObj.location.longitude}]`;
-      else userInput = `[Unknown: ${type}]`;
+      if (type === "text") {
+        userInput = msgObj.text.body.trim();
+      } else if (type === "image") {
+        userInput = "[Image]";
+        media_url = msgObj.image?.url || null;
+      } else if (type === "audio") {
+        userInput = "[Audio]";
+        media_url = msgObj.audio?.url || null;
+      } else if (type === "document") {
+        userInput = "[Document]";
+        media_url = msgObj.document?.url || null;
+      } else if (type === "location") {
+        userInput = `[LOCATION: ${msgObj.location.latitude},${msgObj.location.longitude}]`;
+        location_json = JSON.stringify(msgObj.location);
+      } else {
+        userInput = `[Unknown: ${type}]`;
+      }
 
-      // Get customer (auto-lookup)
+      // Lookup customer by phone
       let customer = await getCustomerByPhone(from, env);
 
-      // Route to command logic
+      // Smart reply logic (customize as needed)
       let reply = await routeCommand({ userInput, customer, env });
 
-      // Send reply to WhatsApp
+      // Send WhatsApp reply
       await sendWhatsAppMessage(from, reply, env);
 
-      // Log user and bot message to D1
+      // Store incoming and outgoing messages in D1
       const now = Date.now();
+      // Incoming
       await env.DB.prepare(
-        `INSERT INTO messages (from_number, body, tag, timestamp, direction) VALUES (?, ?, ?, ?, ?)`
-      ).bind(from, userInput, customer ? "customer" : "lead", now, "incoming").run();
+        `INSERT INTO messages (from_number, body, tag, timestamp, direction, media_url, location_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
+      ).bind(
+        from,
+        userInput,
+        customer ? "customer" : "lead",
+        now,
+        "incoming",
+        media_url,
+        location_json
+      ).run();
+      // Outgoing
       await env.DB.prepare(
-        `INSERT INTO messages (from_number, body, tag, timestamp, direction) VALUES (?, ?, ?, ?, ?)`
-      ).bind(from, reply, customer ? "customer" : "lead", now, "outgoing").run();
+        `INSERT INTO messages (from_number, body, tag, timestamp, direction)
+         VALUES (?, ?, ?, ?, ?)`
+      ).bind(
+        from,
+        reply,
+        customer ? "customer" : "lead",
+        now,
+        "outgoing"
+      ).run();
 
       return Response.json({ ok: true });
     }
 
-// List chats for admin dashboard
-if (url.pathname === "/api/chats" && request.method === "GET") {
-  const sql = `
-    SELECT
-      m.from_number,
-      c.name,
-      MAX(m.timestamp) as last_ts,
-      (SELECT body FROM messages m2 WHERE m2.from_number = m.from_number ORDER BY m2.timestamp DESC LIMIT 1) as last_message,
-      SUM(CASE WHEN m.direction = 'incoming' AND m.seen IS NULL THEN 1 ELSE 0 END) as unread_count,
-      (SELECT tag FROM messages m3 WHERE m3.from_number = m.from_number ORDER BY m3.timestamp DESC LIMIT 1) as tag
-    FROM messages m
-    LEFT JOIN customers c ON c.phone = m.from_number
-    GROUP BY m.from_number
-    ORDER BY last_ts DESC
-    LIMIT 50
-  `;
-  const { results } = await env.DB.prepare(sql).all();
-  return withCORS(Response.json(results));
-}
-    
-if (url.pathname === "/api/set-tag" && request.method === "POST") {
-  const { from_number, tag } = await request.json();
-  if (!from_number || !tag) return withCORS(new Response("Missing fields", { status: 400 }));
-  await env.DB.prepare(`UPDATE messages SET tag = ? WHERE from_number = ?`).bind(tag, from_number).run();
-  return withCORS(Response.json({ ok: true }));
-}
+    // --- List chats for dashboard ---
+    if (url.pathname === "/api/chats" && request.method === "GET") {
+      const sql = `
+        SELECT
+          m.from_number,
+          c.name,
+          c.email,
+          c.customer_id,
+          MAX(m.timestamp) as last_ts,
+          (SELECT body FROM messages m2 WHERE m2.from_number = m.from_number ORDER BY m2.timestamp DESC LIMIT 1) as last_message,
+          SUM(CASE WHEN m.direction = 'incoming' AND (m.seen IS NULL OR m.seen = 0) THEN 1 ELSE 0 END) as unread_count,
+          (SELECT tag FROM messages m3 WHERE m3.from_number = m.from_number ORDER BY m3.timestamp DESC LIMIT 1) as tag
+        FROM messages m
+        LEFT JOIN customers c ON c.phone = m.from_number
+        GROUP BY m.from_number
+        ORDER BY last_ts DESC
+        LIMIT 50
+      `;
+      const { results } = await env.DB.prepare(sql).all();
+      return withCORS(Response.json(results));
+    }
 
-    // List messages for a chat
+    // --- List messages for a chat ---
     if (url.pathname === "/api/messages" && request.method === "GET") {
       const phone = url.searchParams.get("phone");
       if (!phone) return withCORS(new Response("Missing phone", { status: 400 }));
@@ -109,41 +137,60 @@ if (url.pathname === "/api/set-tag" && request.method === "POST") {
       return withCORS(Response.json(results));
     }
 
-    // Send admin reply
+    // --- Send admin reply from dashboard ---
     if (url.pathname === "/api/send-message" && request.method === "POST") {
       const { phone, body } = await request.json();
-      if (!phone || !body)
-        return withCORS(new Response("Missing fields", { status: 400 }));
+      if (!phone || !body) return withCORS(new Response("Missing fields", { status: 400 }));
 
       await sendWhatsAppMessage(phone, body, env);
 
-      
-if (url.pathname === "/api/update-customer" && request.method === "POST") {
-  const { phone, name, customer_id, email } = await request.json();
-  if (!phone) return withCORS(new Response("Missing phone", { status: 400 }));
-  await env.DB.prepare(`
-    INSERT INTO customers (phone, name, customer_id, email, verified)
-    VALUES (?, ?, ?, ?, 1)
-    ON CONFLICT(phone) DO UPDATE SET
-      name=excluded.name,
-      customer_id=excluded.customer_id,
-      email=excluded.email,
-      verified=1
-  `).bind(phone, name, customer_id, email).run();
-  return withCORS(Response.json({ ok: true }));
-}
-
-      
-      // Store message as outgoing
+      // Store outgoing message in D1
       const now = Date.now();
       await env.DB.prepare(
-        `INSERT INTO messages (from_number, body, tag, timestamp, direction, seen) VALUES (?, ?, ?, ?, ?, 1)`
+        `INSERT INTO messages (from_number, body, tag, timestamp, direction, seen)
+         VALUES (?, ?, ?, ?, ?, 1)`
       ).bind(phone, body, "outgoing", now, "outgoing").run();
 
       return withCORS(Response.json({ ok: true }));
     }
 
-    // Fallback
+    // --- Set message/chat tag ---
+    if (url.pathname === "/api/set-tag" && request.method === "POST") {
+      const { from_number, tag } = await request.json();
+      if (!from_number || !tag) return withCORS(new Response("Missing fields", { status: 400 }));
+      // Update all messages for this number with the new tag
+      await env.DB.prepare(
+        `UPDATE messages SET tag=? WHERE from_number=?`
+      ).bind(tag, from_number).run();
+      return withCORS(Response.json({ ok: true }));
+    }
+
+    // --- Update customer details from dashboard ---
+    if (url.pathname === "/api/update-customer" && request.method === "POST") {
+      const { phone, name, customer_id, email } = await request.json();
+      if (!phone) return withCORS(new Response("Missing phone", { status: 400 }));
+      await env.DB.prepare(`
+        INSERT INTO customers (phone, name, customer_id, email, verified)
+        VALUES (?, ?, ?, ?, 1)
+        ON CONFLICT(phone) DO UPDATE SET
+          name=excluded.name,
+          customer_id=excluded.customer_id,
+          email=excluded.email,
+          verified=1
+      `).bind(phone, name, customer_id, email).run();
+      return withCORS(Response.json({ ok: true }));
+    }
+
+    // --- Serve static HTML (optional: if you use Workers Sites/KV Assets) ---
+    if (url.pathname === "/" || url.pathname === "/index.html") {
+      if (env.ASSETS) {
+        const html = await env.ASSETS.fetch(new Request(url.origin + '/index.html'));
+        return html;
+      }
+      return new Response("Dashboard static assets missing", { status: 404 });
+    }
+
+    // --- Fallback: Not Found ---
     return new Response("Not found", { status: 404 });
   }
 };
