@@ -120,13 +120,6 @@ export default {
       return withCORS(Response.json({ ok: true }));
     }
 
-    // Static assets (admin portal)
-    if (url.pathname === "/" || url.pathname === "/index.html") {
-      // Serve static HTML (public/index.html)
-      const html = await env.ASSETS.fetch(new Request(url.origin + '/index.html'));
-      return html;
-    }
-
     // Fallback
     return new Response("Not found", { status: 404 });
   }
