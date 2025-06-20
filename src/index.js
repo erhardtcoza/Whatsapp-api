@@ -1,4 +1,4 @@
-import { getCustomerByPhone, getCustomerBalance, getCustomerStatus, getLatestInvoice } from './splynx.js';
+import { getCustomerByPhone } from './splynx.js';
 import { sendWhatsAppMessage } from './whatsapp.js';
 import { routeCommand } from './commands.js';
 
@@ -10,13 +10,11 @@ export default {
     if (url.pathname === "/webhook" && request.method === "GET") {
       const verify_token = url.searchParams.get("hub.verify_token");
       const challenge = url.searchParams.get("hub.challenge");
-      if (verify_token === env.VERIFY_TOKEN) {
-        return new Response(challenge, { status: 200 });
-      }
+      if (verify_token === env.VERIFY_TOKEN) return new Response(challenge, { status: 200 });
       return new Response("Forbidden", { status: 403 });
     }
 
-    // WhatsApp webhook: message processing
+    // WhatsApp webhook: incoming message
     if (url.pathname === "/webhook" && request.method === "POST") {
       const payload = await request.json();
       const msgObj = payload.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
@@ -30,16 +28,19 @@ export default {
       else if (type === "image") userInput = "[Image]";
       else if (type === "audio") userInput = "[Audio]";
       else if (type === "document") userInput = "[Document]";
+      else if (type === "location") userInput = `[LOCATION: ${msgObj.location.latitude},${msgObj.location.longitude}]`;
       else userInput = `[Unknown: ${type}]`;
 
-      // Get customer info
+      // Get customer (auto-lookup)
       let customer = await getCustomerByPhone(from, env);
+
+      // Route to command logic
       let reply = await routeCommand({ userInput, customer, env });
 
-      // Send WhatsApp reply
+      // Send reply to WhatsApp
       await sendWhatsAppMessage(from, reply, env);
 
-      // Log both user and bot messages in D1
+      // Log user and bot message to D1
       const now = Date.now();
       await env.DB.prepare(
         `INSERT INTO messages (from_number, body, tag, timestamp, direction) VALUES (?, ?, ?, ?, ?)`
@@ -51,8 +52,65 @@ export default {
       return Response.json({ ok: true });
     }
 
-    // (Add your API/dashboard/admin endpoints here...)
+    // List chats for admin dashboard
+    if (url.pathname === "/api/chats" && request.method === "GET") {
+      const sql = `
+        SELECT
+          m.from_number,
+          c.name,
+          MAX(m.timestamp) as last_ts,
+          (SELECT body FROM messages m2 WHERE m2.from_number = m.from_number ORDER BY m2.timestamp DESC LIMIT 1) as last_message,
+          SUM(CASE WHEN m.direction = 'incoming' AND m.seen IS NULL THEN 1 ELSE 0 END) as unread_count
+        FROM messages m
+        LEFT JOIN customers c ON c.phone = m.from_number
+        GROUP BY m.from_number
+        ORDER BY last_ts DESC
+        LIMIT 50
+      `;
+      const { results } = await env.DB.prepare(sql).all();
+      return Response.json(results);
+    }
 
+    // List messages for a chat
+    if (url.pathname === "/api/messages" && request.method === "GET") {
+      const phone = url.searchParams.get("phone");
+      if (!phone) return new Response("Missing phone", { status: 400 });
+      const sql = `
+        SELECT
+          id, from_number, body, tag, timestamp, direction, media_url, location_json
+        FROM messages
+        WHERE from_number = ?
+        ORDER BY timestamp ASC
+        LIMIT 200
+      `;
+      const { results } = await env.DB.prepare(sql).bind(phone).all();
+      return Response.json(results);
+    }
+
+    // Send admin reply
+    if (url.pathname === "/api/send-message" && request.method === "POST") {
+      const { phone, body } = await request.json();
+      if (!phone || !body) return new Response("Missing fields", { status: 400 });
+
+      await sendWhatsAppMessage(phone, body, env);
+
+      // Store message as outgoing
+      const now = Date.now();
+      await env.DB.prepare(
+        `INSERT INTO messages (from_number, body, tag, timestamp, direction, seen) VALUES (?, ?, ?, ?, ?, 1)`
+      ).bind(phone, body, "outgoing", now, "outgoing").run();
+
+      return Response.json({ ok: true });
+    }
+
+    // Static assets (admin portal)
+    if (url.pathname === "/" || url.pathname === "/index.html") {
+      // Serve static HTML (public/index.html)
+      const html = await env.ASSETS.fetch(new Request(url.origin + '/index.html'));
+      return html;
+    }
+
+    // Fallback
     return new Response("Not found", { status: 404 });
   }
 };

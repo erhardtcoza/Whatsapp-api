@@ -26,25 +26,58 @@ How to use:
 
     The admin portal fetches /api/chats and /api/messages?phone=... as discussed above.
 
-file layout
+# Vinet WhatsApp Worker
+
+A WhatsApp bot + admin dashboard for Vinet Internet Solutions.
+
+## Key Features
+- Auto-detects customers by phone (Splynx integration)
+- Quick account and support commands
+- New customer registration flow
+- Admin dashboard to view/reply to chats
+- Logging to D1
+- Brand-matching design
+
+## Setup
+
+1. Fill in `wrangler.toml` with your Cloudflare and WhatsApp API details.
+2. Deploy with:
+
+
+What to do:
+
+    Push the repo to GitHub (optional but recommended).
+
+    Run:
+
+    npx wrangler deploy
+
+    Check logs in your Cloudflare dashboard if anything fails.
+
+    Set your WhatsApp Cloud API webhook to
+    https://w-api.vinetdns.co.za/webhook
+
+    Send a WhatsApp message to your number and watch the Worker reply.
+
+    Open your admin dashboard (/ or /index.html) and confirm chats load.
+
+Troubleshooting:
+
+    If it fails to reply, check your Worker logs and WhatsApp Cloud API dashboard.
+
+    If admin UI does not load, check static asset routing or permissions.
+
+File Tree
 
 vinet-whatsapp-worker/
 ├── src/
-│   ├── index.js           # Main Worker - webhook, bot API, command routing
-│   ├── splynx.js          # Splynx API helpers
-│   ├── whatsapp.js        # WhatsApp send message helper
-│   ├── commands.js        # Command routing and message formatting
-│   ├── utils.js           # Utility functions (e.g. logging, formatting)
-│   └── admin-portal.jsx   # (Optional) Admin portal React page
+│   ├── index.js              # Worker entry, bot/webhook, routes
+│   ├── splynx.js             # Splynx API helpers
+│   ├── whatsapp.js           # WhatsApp send function
+│   ├── commands.js           # Bot command router
+│   └── admin-portal.jsx      # Admin React dashboard
 ├── public/
-│   └── index.html         # (Optional) Static landing page or dashboard entry
+│   └── index.html            # Loads the React admin UI
 ├── wrangler.toml
 └── README.md
-
-vinet-whatsapp-worker/
-├── src/
-│   ├── admin-portal.jsx    # React Admin Portal (UI)
-│   ├── ...                 # (rest unchanged)
-├── public/
-│   └── index.html          # Loads your React admin portal
 

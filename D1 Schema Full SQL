@@ -1,0 +1,95 @@
+-- Admin login (optional for future)
+CREATE TABLE IF NOT EXISTS admins (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  username TEXT UNIQUE,
+  password_hash TEXT
+);
+
+-- Customers (optional cache from Splynx, or for session/lookup)
+CREATE TABLE IF NOT EXISTS customers (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  phone TEXT UNIQUE,
+  email TEXT,
+  customer_id TEXT,
+  name TEXT,
+  verified INTEGER DEFAULT 0,
+  session_token TEXT,
+  session_expires INTEGER
+);
+
+-- Leads (for new or unverified numbers)
+CREATE TABLE IF NOT EXISTS leads (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  phone TEXT,
+  name TEXT,
+  email TEXT,
+  address TEXT,
+  status TEXT DEFAULT 'new',
+  created_at INTEGER
+);
+
+-- Messages (core chat log)
+CREATE TABLE IF NOT EXISTS messages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  from_number TEXT NOT NULL,
+  body TEXT NOT NULL,
+  tag TEXT DEFAULT 'unverified',
+  timestamp INTEGER NOT NULL,
+  direction TEXT NOT NULL, 
+  customer_id INTEGER, 
+  seen INTEGER,  
+  media_url TEXT,   
+  location_json TEXT  
+);
+
+-- Media (optional for advanced R2 handling)
+CREATE TABLE IF NOT EXISTS media (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  message_id INTEGER,
+  url TEXT,
+  type TEXT, 
+  uploaded_at INTEGER,
+  FOREIGN KEY(message_id) REFERENCES messages(id)
+);
+
+-- Auto replies (for office hours, optional)
+CREATE TABLE IF NOT EXISTS auto_replies (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  tag TEXT,
+  hours TEXT,
+  reply TEXT
+);
+
+-- Alerts (for future notification/trigger support)
+CREATE TABLE IF NOT EXISTS alerts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  phone TEXT,
+  tag TEXT,
+  message TEXT,
+  resolved INTEGER DEFAULT 0,
+  created_at INTEGER
+);
+
+-- Broadcast tracking (optional, for sending and tracking mass messages)
+CREATE TABLE IF NOT EXISTS broadcasts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  message TEXT,
+  tag TEXT,
+  created_by TEXT,
+  sent_at INTEGER
+);
+
+-- Sessions (future use: tracking authenticated admin sessions)
+CREATE TABLE IF NOT EXISTS sessions (
+  phone TEXT PRIMARY KEY,
+  email TEXT,
+  customer_id TEXT,
+  verified INTEGER DEFAULT 0,
+  last_seen INTEGER
+);
+
+-- Indexes for performance
+CREATE INDEX IF NOT EXISTS idx_messages_phone ON messages(from_number);
+CREATE INDEX IF NOT EXISTS idx_customers_phone ON customers(phone);
+CREATE INDEX IF NOT EXISTS idx_leads_phone ON leads(phone);
+CREATE INDEX IF NOT EXISTS idx_messages_seen ON messages(seen);
