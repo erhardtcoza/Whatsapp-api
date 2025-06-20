@@ -2,24 +2,22 @@ import { getCustomerByPhone } from './splynx.js';
 import { sendWhatsAppMessage } from './whatsapp.js';
 import { routeCommand } from './commands.js';
 
-// ---- CORS helper function ----
-function withCORS(response) {
-  response.headers.set("Access-Control-Allow-Origin", "*"); // Or use your dashboard URL for more security
-  response.headers.set("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-  response.headers.set("Access-Control-Allow-Headers", "Content-Type");
-  return response;
+function withCORS(resp) {
+  resp.headers.set("Access-Control-Allow-Origin", "*");
+  resp.headers.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  resp.headers.set("Access-Control-Allow-Headers", "*");
+  return resp;
+}
+
+// Handle preflight
+if (request.method === "OPTIONS") {
+  return withCORS(new Response("OK", { status: 200 }));
 }
 // -----------------------------
 
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
-
-    // ---- Handle preflight CORS ----
-    if (url.pathname.startsWith("/api/") && request.method === "OPTIONS") {
-      return withCORS(new Response(null, { status: 204 }));
-    }
-    // ------------------------------
 
     // WhatsApp webhook verification
     if (url.pathname === "/webhook" && request.method === "GET") {
@@ -119,22 +117,6 @@ if (url.pathname === "/api/set-tag" && request.method === "POST") {
 
       await sendWhatsAppMessage(phone, body, env);
 
-      // API update-customer
-if (url.pathname === "/api/update-customer" && request.method === "POST") {
-  const { phone, name, customer_id, email } = await request.json();
-  if (!phone) return withCORS(new Response("Missing phone", { status: 400 }));
-  // Upsert into customers table
-  await env.DB.prepare(`
-    INSERT INTO customers (phone, name, customer_id, email, verified)
-    VALUES (?, ?, ?, ?, 1)
-    ON CONFLICT(phone) DO UPDATE SET
-      name=excluded.name,
-      customer_id=excluded.customer_id,
-      email=excluded.email,
-      verified=1
-  `).bind(phone, name, customer_id, email).run();
-  return withCORS(Response.json({ ok: true }));
-}
       
 if (url.pathname === "/api/update-customer" && request.method === "POST") {
   const { phone, name, customer_id, email } = await request.json();
