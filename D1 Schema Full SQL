@@ -35,11 +35,11 @@ CREATE TABLE IF NOT EXISTS messages (
   body TEXT NOT NULL,
   tag TEXT DEFAULT 'unverified',
   timestamp INTEGER NOT NULL,
-  direction TEXT NOT NULL, -- 'incoming' or 'outgoing'
-  customer_id INTEGER,     -- link if known
-  seen INTEGER,            -- for unread count
-  media_url TEXT,          -- for images/files (optional)
-  location_json TEXT       -- for storing lat/lng JSON if location msg
+  direction TEXT NOT NULL, 
+  customer_id INTEGER, 
+  seen INTEGER,  
+  media_url TEXT,   
+  location_json TEXT  
 );
 
 -- Media (optional for advanced R2 handling)
