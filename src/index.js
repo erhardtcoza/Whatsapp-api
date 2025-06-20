@@ -2,14 +2,18 @@ import { getCustomerByPhone } from './splynx.js';
 import { sendWhatsAppMessage } from './whatsapp.js';
 import { routeCommand } from './commands.js';
 
-// ---- CORS helper function ----
-function withCORS(response) {
-  response.headers.set("Access-Control-Allow-Origin", "*"); // Or use your dashboard URL for more security
-  response.headers.set("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-  response.headers.set("Access-Control-Allow-Headers", "Content-Type");
-  return response;
+function withCORS(resp) {
+  resp.headers.set("Access-Control-Allow-Origin", "*");
+  resp.headers.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  resp.headers.set("Access-Control-Allow-Headers", "*");
+  return resp;
 }
-// -----------------------------
+
+// Handle preflight
+if (request.method === "OPTIONS") {
+  return withCORS(new Response("OK", { status: 200 }));
+}
+
 
 export default {
   async fetch(request, env, ctx) {
