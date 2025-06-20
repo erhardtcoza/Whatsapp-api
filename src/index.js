@@ -68,24 +68,25 @@ export default {
       return Response.json({ ok: true });
     }
 
-    // List chats for admin dashboard
-    if (url.pathname === "/api/chats" && request.method === "GET") {
-      const sql = `
-        SELECT
-          m.from_number,
-          c.name,
-          MAX(m.timestamp) as last_ts,
-          (SELECT body FROM messages m2 WHERE m2.from_number = m.from_number ORDER BY m2.timestamp DESC LIMIT 1) as last_message,
-          SUM(CASE WHEN m.direction = 'incoming' AND m.seen IS NULL THEN 1 ELSE 0 END) as unread_count
-        FROM messages m
-        LEFT JOIN customers c ON c.phone = m.from_number
-        GROUP BY m.from_number
-        ORDER BY last_ts DESC
-        LIMIT 50
-      `;
-      const { results } = await env.DB.prepare(sql).all();
-      return withCORS(Response.json(results));
-    }
+// List chats for admin dashboard
+if (url.pathname === "/api/chats" && request.method === "GET") {
+  const sql = `
+    SELECT
+      m.from_number,
+      c.name,
+      MAX(m.timestamp) as last_ts,
+      (SELECT body FROM messages m2 WHERE m2.from_number = m.from_number ORDER BY m2.timestamp DESC LIMIT 1) as last_message,
+      SUM(CASE WHEN m.direction = 'incoming' AND m.seen IS NULL THEN 1 ELSE 0 END) as unread_count,
+      (SELECT tag FROM messages m3 WHERE m3.from_number = m.from_number ORDER BY m3.timestamp DESC LIMIT 1) as tag
+    FROM messages m
+    LEFT JOIN customers c ON c.phone = m.from_number
+    GROUP BY m.from_number
+    ORDER BY last_ts DESC
+    LIMIT 50
+  `;
+  const { results } = await env.DB.prepare(sql).all();
+  return withCORS(Response.json(results));
+}
     
 if (url.pathname === "/api/set-tag" && request.method === "POST") {
   const { from_number, tag } = await request.json();
