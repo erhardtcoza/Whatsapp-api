@@ -2,15 +2,31 @@ import { getCustomerByPhone } from './splynx.js';
 import { sendWhatsAppMessage } from './whatsapp.js';
 import { routeCommand } from './commands.js';
 
+// ---- CORS helper function ----
+function withCORS(response) {
+  response.headers.set("Access-Control-Allow-Origin", "*"); // Or use your dashboard URL for more security
+  response.headers.set("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  response.headers.set("Access-Control-Allow-Headers", "Content-Type");
+  return response;
+}
+// -----------------------------
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
+
+    // ---- Handle preflight CORS ----
+    if (url.pathname.startsWith("/api/") && request.method === "OPTIONS") {
+      return withCORS(new Response(null, { status: 204 }));
+    }
+    // ------------------------------
 
     // WhatsApp webhook verification
     if (url.pathname === "/webhook" && request.method === "GET") {
       const verify_token = url.searchParams.get("hub.verify_token");
       const challenge = url.searchParams.get("hub.challenge");
-      if (verify_token === env.VERIFY_TOKEN) return new Response(challenge, { status: 200 });
+      if (verify_token === env.VERIFY_TOKEN)
+        return new Response(challenge, { status: 200 });
       return new Response("Forbidden", { status: 403 });
     }
 
@@ -68,13 +84,13 @@ export default {
         LIMIT 50
       `;
       const { results } = await env.DB.prepare(sql).all();
-      return Response.json(results);
+      return withCORS(Response.json(results));
     }
 
     // List messages for a chat
     if (url.pathname === "/api/messages" && request.method === "GET") {
       const phone = url.searchParams.get("phone");
-      if (!phone) return new Response("Missing phone", { status: 400 });
+      if (!phone) return withCORS(new Response("Missing phone", { status: 400 }));
       const sql = `
         SELECT
           id, from_number, body, tag, timestamp, direction, media_url, location_json
@@ -84,13 +100,14 @@ export default {
         LIMIT 200
       `;
       const { results } = await env.DB.prepare(sql).bind(phone).all();
-      return Response.json(results);
+      return withCORS(Response.json(results));
     }
 
     // Send admin reply
     if (url.pathname === "/api/send-message" && request.method === "POST") {
       const { phone, body } = await request.json();
-      if (!phone || !body) return new Response("Missing fields", { status: 400 });
+      if (!phone || !body)
+        return withCORS(new Response("Missing fields", { status: 400 }));
 
       await sendWhatsAppMessage(phone, body, env);
 
@@ -100,7 +117,7 @@ export default {
         `INSERT INTO messages (from_number, body, tag, timestamp, direction, seen) VALUES (?, ?, ?, ?, ?, 1)`
       ).bind(phone, body, "outgoing", now, "outgoing").run();
 
-      return Response.json({ ok: true });
+      return withCORS(Response.json({ ok: true }));
     }
 
     // Static assets (admin portal)
