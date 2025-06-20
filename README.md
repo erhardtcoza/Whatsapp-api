@@ -34,3 +34,11 @@ vinet-whatsapp-worker/
 │   └── index.html         # (Optional) Static landing page or dashboard entry
 ├── wrangler.toml
 └── README.md
+
+vinet-whatsapp-worker/
+├── src/
+│   ├── admin-portal.jsx    # React Admin Portal (UI)
+│   ├── ...                 # (rest unchanged)
+├── public/
+│   └── index.html          # Loads your React admin portal
+
