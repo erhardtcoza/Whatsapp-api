@@ -26,25 +26,17 @@ How to use:
 
     The admin portal fetches /api/chats and /api/messages?phone=... as discussed above.
 
-file layout
+File Tree
 
 vinet-whatsapp-worker/
 ├── src/
-│   ├── index.js           # Main Worker - webhook, bot API, command routing
-│   ├── splynx.js          # Splynx API helpers
-│   ├── whatsapp.js        # WhatsApp send message helper
-│   ├── commands.js        # Command routing and message formatting
-│   ├── utils.js           # Utility functions (e.g. logging, formatting)
-│   └── admin-portal.jsx   # (Optional) Admin portal React page
+│   ├── index.js              # Worker entry, bot/webhook, routes
+│   ├── splynx.js             # Splynx API helpers
+│   ├── whatsapp.js           # WhatsApp send function
+│   ├── commands.js           # Bot command router
+│   └── admin-portal.jsx      # Admin React dashboard
 ├── public/
-│   └── index.html         # (Optional) Static landing page or dashboard entry
+│   └── index.html            # Loads the React admin UI
 ├── wrangler.toml
 └── README.md
-
-vinet-whatsapp-worker/
-├── src/
-│   ├── admin-portal.jsx    # React Admin Portal (UI)
-│   ├── ...                 # (rest unchanged)
-├── public/
-│   └── index.html          # Loads your React admin portal
 
