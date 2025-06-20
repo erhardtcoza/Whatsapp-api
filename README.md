@@ -1,5 +1,25 @@
 # Whatsapp-worker-vinet
 
+
+# Vinet WhatsApp Worker
+
+WhatsApp bot for Vinet Internet Solutions.
+
+## Key Features
+- Customer auto-detection and personalized commands
+- Splynx integration (balance, invoice, status, etc.)
+- New customer registration path
+- Easy to extend and customize
+
+## Setup
+1. Update `wrangler.toml` with your Cloudflare, D1, and WhatsApp details.
+2. Deploy with `npx wrangler deploy`.
+
+## Webhook
+Set the webhook URL in your WhatsApp Cloud API dashboard to:
+
+
+
 file layout
 
 vinet-whatsapp-worker/
