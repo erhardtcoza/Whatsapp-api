@@ -135,6 +135,21 @@ if (url.pathname === "/api/update-customer" && request.method === "POST") {
   `).bind(phone, name, customer_id, email).run();
   return withCORS(Response.json({ ok: true }));
 }
+      
+if (url.pathname === "/api/update-customer" && request.method === "POST") {
+  const { phone, name, customer_id, email } = await request.json();
+  if (!phone) return withCORS(new Response("Missing phone", { status: 400 }));
+  await env.DB.prepare(`
+    INSERT INTO customers (phone, name, customer_id, email, verified)
+    VALUES (?, ?, ?, ?, 1)
+    ON CONFLICT(phone) DO UPDATE SET
+      name=excluded.name,
+      customer_id=excluded.customer_id,
+      email=excluded.email,
+      verified=1
+  `).bind(phone, name, customer_id, email).run();
+  return withCORS(Response.json({ ok: true }));
+}
 
       
       // Store message as outgoing
