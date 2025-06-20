@@ -181,6 +181,27 @@ export default {
       return withCORS(Response.json({ ok: true }));
     }
 
+    // GET all auto-replies
+if (url.pathname === "/api/auto-replies" && request.method === "GET") {
+  const { results } = await env.DB.prepare(`SELECT * FROM auto_replies`).all();
+  return Response.json(results);
+}
+// POST: update auto-reply
+if (url.pathname === "/api/auto-reply" && request.method === "POST") {
+  const { id, tag, hours, reply } = await request.json();
+  if (!tag || !reply) return new Response("Missing fields", { status: 400 });
+  if (id) {
+    await env.DB.prepare(
+      `UPDATE auto_replies SET tag=?, hours=?, reply=? WHERE id=?`
+    ).bind(tag, hours, reply, id).run();
+  } else {
+    await env.DB.prepare(
+      `INSERT INTO auto_replies (tag, hours, reply) VALUES (?, ?, ?)`
+    ).bind(tag, hours, reply).run();
+  }
+  return Response.json({ ok: true });
+}
+
     // --- Serve static HTML (optional: if you use Workers Sites/KV Assets) ---
     if (url.pathname === "/" || url.pathname === "/index.html") {
       if (env.ASSETS) {
