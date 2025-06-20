@@ -16,7 +16,7 @@ WhatsApp bot for Vinet Internet Solutions.
 2. Deploy with `npx wrangler deploy`.
 
 ## Webhook
-Set the webhook URL in your WhatsApp Cloud API dashboard to:
+Set the webhook URL in your WhatsApp Cloud API dashboard to: https://w-api.vinetdns.co.za/webhook
 
 
 
