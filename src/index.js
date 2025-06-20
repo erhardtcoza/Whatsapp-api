@@ -86,6 +86,13 @@ export default {
       const { results } = await env.DB.prepare(sql).all();
       return withCORS(Response.json(results));
     }
+    
+if (url.pathname === "/api/set-tag" && request.method === "POST") {
+  const { from_number, tag } = await request.json();
+  if (!from_number || !tag) return withCORS(new Response("Missing fields", { status: 400 }));
+  await env.DB.prepare(`UPDATE messages SET tag = ? WHERE from_number = ?`).bind(tag, from_number).run();
+  return withCORS(Response.json({ ok: true }));
+}
 
     // List messages for a chat
     if (url.pathname === "/api/messages" && request.method === "GET") {
