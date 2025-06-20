@@ -18,7 +18,13 @@ WhatsApp bot for Vinet Internet Solutions.
 ## Webhook
 Set the webhook URL in your WhatsApp Cloud API dashboard to: https://w-api.vinetdns.co.za/webhook
 
+How to use:
 
+    Place your React JSX files in src/.
+
+    Serve static files from /public using Workers assets (or just deploy with a simple build pipeline).
+
+    The admin portal fetches /api/chats and /api/messages?phone=... as discussed above.
 
 file layout
 
