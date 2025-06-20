@@ -26,6 +26,24 @@ How to use:
 
     The admin portal fetches /api/chats and /api/messages?phone=... as discussed above.
 
+# Vinet WhatsApp Worker
+
+A WhatsApp bot + admin dashboard for Vinet Internet Solutions.
+
+## Key Features
+- Auto-detects customers by phone (Splynx integration)
+- Quick account and support commands
+- New customer registration flow
+- Admin dashboard to view/reply to chats
+- Logging to D1
+- Brand-matching design
+
+## Setup
+
+1. Fill in `wrangler.toml` with your Cloudflare and WhatsApp API details.
+2. Deploy with:
+
+
 File Tree
 
 vinet-whatsapp-worker/
