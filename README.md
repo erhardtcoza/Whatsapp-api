@@ -44,6 +44,29 @@ A WhatsApp bot + admin dashboard for Vinet Internet Solutions.
 2. Deploy with:
 
 
+What to do:
+
+    Push the repo to GitHub (optional but recommended).
+
+    Run:
+
+    npx wrangler deploy
+
+    Check logs in your Cloudflare dashboard if anything fails.
+
+    Set your WhatsApp Cloud API webhook to
+    https://w-api.vinetdns.co.za/webhook
+
+    Send a WhatsApp message to your number and watch the Worker reply.
+
+    Open your admin dashboard (/ or /index.html) and confirm chats load.
+
+Troubleshooting:
+
+    If it fails to reply, check your Worker logs and WhatsApp Cloud API dashboard.
+
+    If admin UI does not load, check static asset routing or permissions.
+
 File Tree
 
 vinet-whatsapp-worker/
