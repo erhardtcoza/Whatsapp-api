@@ -47,7 +47,7 @@ CREATE TABLE IF NOT EXISTS media (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   message_id INTEGER,
   url TEXT,
-  type TEXT, -- 'image', 'file', etc.
+  type TEXT, 
   uploaded_at INTEGER,
   FOREIGN KEY(message_id) REFERENCES messages(id)
 );
