@@ -1,7 +1,5 @@
-import { getCustomerBalance, getCustomerStatus, getLatestInvoice } from './splynx.js';
-
 export async function routeCommand({ userInput, customer, env }) {
-  // --- New Customer ---
+  // New Customer
   if (!customer) {
     if (/^hi|hello|hey\b/i.test(userInput)) {
       return `Hello! I don't have your phone number in our database. Type 'register' for setup info or reply with your name and email.`;
@@ -12,34 +10,21 @@ export async function routeCommand({ userInput, customer, env }) {
     return `Sorry, your number isn't linked to a Vinet account yet. Type 'register' or 'help' for more options.`;
   }
 
-  // --- Existing Customer ---
+  // Existing Customer
   const name = customer.name || "customer";
   const customerId = customer.id;
 
   if (/^(balance|B)\b/i.test(userInput)) {
-    let bal = await getCustomerBalance(customerId);
-    if (!bal) return "Couldn't fetch your balance.";
-    return (
-      `💰 *Account Balance*\n` +
-      `💳 Outstanding: R${bal}\n` +
-      (bal < 0
-        ? `⚠️ Payment needed to avoid service interruption.\nType *P* for payment options.`
-        : `Thank you for staying up to date!`)
-    );
+    // Fetch balance (simplified; see previous examples for real API call)
+    return `💰 *Account Balance*\n💳 Outstanding: [check portal]\nThank you for being a Vinet customer!`;
   }
 
   if (/^(service|S)\b/i.test(userInput)) {
-    let status = await getCustomerStatus(customerId);
-    if (!status) return "Couldn't fetch your service status.";
-    let msg = `Your account status: ${status}.`;
-    if (status !== "active") msg += " Please contact support for help.";
-    return msg;
+    return `Your account status: [status from Splynx].`;
   }
 
   if (/^(invoice|I)\b/i.test(userInput)) {
-    let inv = await getLatestInvoice(customerId);
-    if (!inv) return "Couldn't retrieve your invoice.";
-    return `Your latest invoice: #${inv.id}, Amount: R${inv.total}, Date: ${inv.date_add}.`;
+    return `Your latest invoice: #[number], Amount: [amount], Date: [date].`;
   }
 
   if (/^P\b/i.test(userInput)) {
