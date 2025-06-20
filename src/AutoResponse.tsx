@@ -2,25 +2,62 @@ import { useEffect, useState } from "react";
 
 const API_BASE = import.meta.env.VITE_API_BASE || "";
 
+function defaultHours() {
+  return {
+    mon: "08:00-17:00",
+    tue: "08:00-17:00",
+    wed: "08:00-17:00",
+    thu: "08:00-17:00",
+    fri: "08:00-17:00",
+    sat: "closed",
+    sun: "closed",
+  };
+}
+
+function hoursText(hours: any) {
+  // e.g. "Mon-Fri: 08:00-17:00, Sat-Sun: closed"
+  if (!hours) return "";
+  if (typeof hours === "string") {
+    try { hours = JSON.parse(hours); } catch { return hours; }
+  }
+  let work = [];
+  for (let day of ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]) {
+    work.push(
+      `${day.charAt(0).toUpperCase() + day.slice(1)}: ${hours[day] || "closed"}`
+    );
+  }
+  return work.join(", ");
+}
+
 export default function AutoResponse({ colors, darkMode }: any) {
   const [replies, setReplies] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState<any | null>(null);
   const [msg, setMsg] = useState("");
-  const [hours, setHours] = useState("");
+  const [hours, setHours] = useState(defaultHours());
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     fetch(`${API_BASE}/api/auto-replies`)
       .then(r => r.json())
-      .then(setReplies)
-      .finally(() => setLoading(false));
+      .then(data => {
+        setReplies(data);
+        setLoading(false);
+      });
   }, []);
 
   const startEdit = (reply: any) => {
     setEditing(reply);
     setMsg(reply.reply);
-    setHours(reply.hours || "");
+    let h = defaultHours();
+    if (reply.hours) {
+      try { h = { ...h, ...JSON.parse(reply.hours) }; } catch { h = { ...h, ...reply.hours }; }
+    }
+    setHours(h);
+  };
+
+  const handleHourChange = (day: string, val: string) => {
+    setHours({ ...hours, [day]: val });
   };
 
   const save = async () => {
@@ -31,7 +68,7 @@ export default function AutoResponse({ colors, darkMode }: any) {
       body: JSON.stringify({
         id: editing.id,
         tag: editing.tag,
-        hours,
+        hours: JSON.stringify(hours),
         reply: msg,
       }),
     });
@@ -71,7 +108,34 @@ export default function AutoResponse({ colors, darkMode }: any) {
             {replies.map(reply => (
               <tr key={reply.id}>
                 <td style={{ padding: "6px 12px" }}>{reply.tag}</td>
-                <td style={{ padding: "6px 12px" }}>{reply.hours}</td>
+                <td style={{ padding: "6px 12px", minWidth: 180 }}>
+                  {editing?.id === reply.id ? (
+                    <div>
+                      {Object.keys(defaultHours()).map(day => (
+                        <div key={day} style={{ marginBottom: 4 }}>
+                          <label style={{ minWidth: 55, display: "inline-block" }}>
+                            {day.charAt(0).toUpperCase() + day.slice(1)}:
+                          </label>
+                          <input
+                            value={hours[day]}
+                            onChange={e => handleHourChange(day, e.target.value)}
+                            style={{
+                              width: 90,
+                              borderRadius: 4,
+                              border: `1px solid ${colors.border}`,
+                              background: colors.input,
+                              color: colors.inputText,
+                              marginLeft: 3,
+                            }}
+                            placeholder="closed"
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <span style={{ fontSize: 13, color: colors.sub }}>{hoursText(reply.hours)}</span>
+                  )}
+                </td>
                 <td style={{ padding: "6px 12px" }}>
                   {editing?.id === reply.id ? (
                     <textarea
