@@ -99,6 +99,13 @@ export default {
       return Response.json({ ok: true });
     }
 
+    // --- Ensure customer exists in customers table ---
+await env.DB.prepare(
+  `INSERT OR IGNORE INTO customers (phone, name, email, verified)
+   VALUES (?, '', '', 0)`
+).bind(from).run();
+
+    
     // --- List chats for dashboard ---
     if (url.pathname === "/api/chats" && request.method === "GET") {
       const sql = `
