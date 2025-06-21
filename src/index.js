@@ -1,5 +1,3 @@
-// src/index.js
-
 import { getCustomerByPhone } from './splynx.js';
 import { sendWhatsAppMessage } from './whatsapp.js';
 import { routeCommand } from './commands.js';
@@ -16,7 +14,7 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
-    // --- Handle CORS preflight for API endpoints ---
+    // --- Handle CORS preflight ---
     if (request.method === "OPTIONS" && url.pathname.startsWith("/api/")) {
       return withCORS(new Response("OK", { status: 200 }));
     }
@@ -60,16 +58,11 @@ export default {
         userInput = `[Unknown: ${type}]`;
       }
 
-      // Lookup customer by phone
       let customer = await getCustomerByPhone(from, env);
-
-      // Smart reply logic (customize as needed)
       let reply = await routeCommand({ userInput, customer, env });
 
-      // Send WhatsApp reply
       await sendWhatsAppMessage(from, reply, env);
 
-      // Store incoming and outgoing messages in D1
       const now = Date.now();
       // Incoming
       await env.DB.prepare(
@@ -84,6 +77,13 @@ export default {
         media_url,
         location_json
       ).run();
+
+      // --- Ensure sender exists in customers table ---
+      await env.DB.prepare(
+        `INSERT OR IGNORE INTO customers (phone, name, email, verified)
+         VALUES (?, '', '', 0)`
+      ).bind(from).run();
+
       // Outgoing
       await env.DB.prepare(
         `INSERT INTO messages (from_number, body, tag, timestamp, direction)
@@ -99,13 +99,6 @@ export default {
       return Response.json({ ok: true });
     }
 
-    // --- Ensure customer exists in customers table ---
-await env.DB.prepare(
-  `INSERT OR IGNORE INTO customers (phone, name, email, verified)
-   VALUES (?, '', '', 0)`
-).bind(from).run();
-
-    
     // --- List chats for dashboard ---
     if (url.pathname === "/api/chats" && request.method === "GET") {
       const sql = `
@@ -151,7 +144,6 @@ await env.DB.prepare(
 
       await sendWhatsAppMessage(phone, body, env);
 
-      // Store outgoing message in D1
       const now = Date.now();
       await env.DB.prepare(
         `INSERT INTO messages (from_number, body, tag, timestamp, direction, seen)
@@ -165,7 +157,6 @@ await env.DB.prepare(
     if (url.pathname === "/api/set-tag" && request.method === "POST") {
       const { from_number, tag } = await request.json();
       if (!from_number || !tag) return withCORS(new Response("Missing fields", { status: 400 }));
-      // Update all messages for this number with the new tag
       await env.DB.prepare(
         `UPDATE messages SET tag=? WHERE from_number=?`
       ).bind(tag, from_number).run();
@@ -188,95 +179,94 @@ await env.DB.prepare(
       return withCORS(Response.json({ ok: true }));
     }
 
-    // GET all auto-replies
-if (url.pathname === "/api/auto-replies" && request.method === "GET") {
-  const { results } = await env.DB.prepare(`SELECT * FROM auto_replies`).all();
-  return Response.json(results);
-}
-// POST: update auto-reply
-if (url.pathname === "/api/auto-reply" && request.method === "POST") {
-  const { id, tag, hours, reply } = await request.json();
-  if (!tag || !reply) return new Response("Missing fields", { status: 400 });
-  if (id) {
-    await env.DB.prepare(
-      `UPDATE auto_replies SET tag=?, hours=?, reply=? WHERE id=?`
-    ).bind(tag, hours, reply, id).run();
-  } else {
-    await env.DB.prepare(
-      `INSERT INTO auto_replies (tag, hours, reply) VALUES (?, ?, ?)`
-    ).bind(tag, hours, reply).run();
-  }
-  return Response.json({ ok: true });
-}
+    // --- GET all auto-replies ---
+    if (url.pathname === "/api/auto-replies" && request.method === "GET") {
+      const { results } = await env.DB.prepare(`SELECT * FROM auto_replies`).all();
+      return Response.json(results);
+    }
+    // --- POST: update auto-reply ---
+    if (url.pathname === "/api/auto-reply" && request.method === "POST") {
+      const { id, tag, hours, reply } = await request.json();
+      if (!tag || !reply) return new Response("Missing fields", { status: 400 });
+      if (id) {
+        await env.DB.prepare(
+          `UPDATE auto_replies SET tag=?, hours=?, reply=? WHERE id=?`
+        ).bind(tag, hours, reply, id).run();
+      } else {
+        await env.DB.prepare(
+          `INSERT INTO auto_replies (tag, hours, reply) VALUES (?, ?, ?)`
+        ).bind(tag, hours, reply).run();
+      }
+      return Response.json({ ok: true });
+    }
 
-    // GET all open support chats
-if (url.pathname === "/api/support-chats" && request.method === "GET") {
-  const sql = `
-    SELECT
-      m.from_number,
-      c.name,
-      c.email,
-      c.customer_id,
-      MAX(m.timestamp) as last_ts,
-      (SELECT body FROM messages m2 WHERE m2.from_number = m.from_number ORDER BY m2.timestamp DESC LIMIT 1) as last_message
-    FROM messages m
-    LEFT JOIN customers c ON c.phone = m.from_number
-    WHERE m.tag = 'support'
-      AND (m.closed IS NULL OR m.closed = 0)
-    GROUP BY m.from_number
-    ORDER BY last_ts DESC
-    LIMIT 200
-  `;
-  const { results } = await env.DB.prepare(sql).all();
-  return withCORS(Response.json(results));
-}
+    // --- GET all open support chats ---
+    if (url.pathname === "/api/support-chats" && request.method === "GET") {
+      const sql = `
+        SELECT
+          m.from_number,
+          c.name,
+          c.email,
+          c.customer_id,
+          MAX(m.timestamp) as last_ts,
+          (SELECT body FROM messages m2 WHERE m2.from_number = m.from_number ORDER BY m2.timestamp DESC LIMIT 1) as last_message
+        FROM messages m
+        LEFT JOIN customers c ON c.phone = m.from_number
+        WHERE m.tag = 'support'
+          AND (m.closed IS NULL OR m.closed = 0)
+        GROUP BY m.from_number
+        ORDER BY last_ts DESC
+        LIMIT 200
+      `;
+      const { results } = await env.DB.prepare(sql).all();
+      return withCORS(Response.json(results));
+    }
 
-    // GET all open accounts chats
-if (url.pathname === "/api/accounts-chats" && request.method === "GET") {
-  const sql = `
-    SELECT
-      m.from_number,
-      c.name,
-      c.email,
-      c.customer_id,
-      MAX(m.timestamp) as last_ts,
-      (SELECT body FROM messages m2 WHERE m2.from_number = m.from_number ORDER BY m2.timestamp DESC LIMIT 1) as last_message
-    FROM messages m
-    LEFT JOIN customers c ON c.phone = m.from_number
-    WHERE m.tag = 'accounts'
-      AND (m.closed IS NULL OR m.closed = 0)
-    GROUP BY m.from_number
-    ORDER BY last_ts DESC
-    LIMIT 200
-  `;
-  const { results } = await env.DB.prepare(sql).all();
-  return withCORS(Response.json(results));
-}
+    // --- GET all open accounts chats ---
+    if (url.pathname === "/api/accounts-chats" && request.method === "GET") {
+      const sql = `
+        SELECT
+          m.from_number,
+          c.name,
+          c.email,
+          c.customer_id,
+          MAX(m.timestamp) as last_ts,
+          (SELECT body FROM messages m2 WHERE m2.from_number = m.from_number ORDER BY m2.timestamp DESC LIMIT 1) as last_message
+        FROM messages m
+        LEFT JOIN customers c ON c.phone = m.from_number
+        WHERE m.tag = 'accounts'
+          AND (m.closed IS NULL OR m.closed = 0)
+        GROUP BY m.from_number
+        ORDER BY last_ts DESC
+        LIMIT 200
+      `;
+      const { results } = await env.DB.prepare(sql).all();
+      return withCORS(Response.json(results));
+    }
 
-    // GET all open sales chats
-if (url.pathname === "/api/sales-chats" && request.method === "GET") {
-  const sql = `
-    SELECT
-      m.from_number,
-      c.name,
-      c.email,
-      c.customer_id,
-      MAX(m.timestamp) as last_ts,
-      (SELECT body FROM messages m2 WHERE m2.from_number = m.from_number ORDER BY m2.timestamp DESC LIMIT 1) as last_message
-    FROM messages m
-    LEFT JOIN customers c ON c.phone = m.from_number
-    WHERE m.tag = 'sales'
-      AND (m.closed IS NULL OR m.closed = 0)
-    GROUP BY m.from_number
-    ORDER BY last_ts DESC
-    LIMIT 200
-  `;
-  const { results } = await env.DB.prepare(sql).all();
-  return withCORS(Response.json(results));
-}
+    // --- GET all open sales chats ---
+    if (url.pathname === "/api/sales-chats" && request.method === "GET") {
+      const sql = `
+        SELECT
+          m.from_number,
+          c.name,
+          c.email,
+          c.customer_id,
+          MAX(m.timestamp) as last_ts,
+          (SELECT body FROM messages m2 WHERE m2.from_number = m.from_number ORDER BY m2.timestamp DESC LIMIT 1) as last_message
+        FROM messages m
+        LEFT JOIN customers c ON c.phone = m.from_number
+        WHERE m.tag = 'sales'
+          AND (m.closed IS NULL OR m.closed = 0)
+        GROUP BY m.from_number
+        ORDER BY last_ts DESC
+        LIMIT 200
+      `;
+      const { results } = await env.DB.prepare(sql).all();
+      return withCORS(Response.json(results));
+    }
 
-    
-        // --- List all unlinked clients (missing customer_id or email) ---
+    // --- List all unlinked clients (missing customer_id or email) ---
     if (url.pathname === "/api/unlinked-clients" && request.method === "GET") {
       const sql = `
         SELECT
@@ -300,20 +290,19 @@ if (url.pathname === "/api/sales-chats" && request.method === "GET") {
       }
     }
 
-    // POST /api/customers-sync
-if (url.pathname === "/api/customers-sync" && request.method === "POST") {
-  const sql = `
-    INSERT OR IGNORE INTO customers (phone, name, email, verified)
-    SELECT DISTINCT from_number, '', '', 0
-    FROM messages
-    WHERE from_number NOT IN (SELECT phone FROM customers)
-  `;
-  await env.DB.prepare(sql).run();
-  return withCORS(Response.json({ ok: true, message: "Customers table synced with messages." }));
-}
+    // --- POST /api/customers-sync (maintenance endpoint) ---
+    if (url.pathname === "/api/customers-sync" && request.method === "POST") {
+      const sql = `
+        INSERT OR IGNORE INTO customers (phone, name, email, verified)
+        SELECT DISTINCT from_number, '', '', 0
+        FROM messages
+        WHERE from_number NOT IN (SELECT phone FROM customers)
+      `;
+      await env.DB.prepare(sql).run();
+      return withCORS(Response.json({ ok: true, message: "Customers table synced with messages." }));
+    }
 
-    
-    // --- Serve static HTML (optional: if you use Workers Sites/KV Assets) ---
+    // --- Serve static HTML ---
     if (url.pathname === "/" || url.pathname === "/index.html") {
       if (env.ASSETS) {
         const html = await env.ASSETS.fetch(new Request(url.origin + '/index.html'));
