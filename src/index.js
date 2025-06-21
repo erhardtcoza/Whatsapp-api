@@ -202,6 +202,31 @@ if (url.pathname === "/api/auto-reply" && request.method === "POST") {
   return Response.json({ ok: true });
 }
 
+        // --- List all unlinked clients (missing customer_id or email) ---
+    if (url.pathname === "/api/unlinked-clients" && request.method === "GET") {
+      const sql = `
+        SELECT
+          m.from_number,
+          MAX(m.timestamp) AS last_msg,
+          COALESCE(c.name, '') AS name,
+          COALESCE(c.email, '') AS email
+        FROM messages m
+        LEFT JOIN customers c ON m.from_number = c.phone
+        WHERE m.tag = 'unverified'
+          AND (c.verified IS NULL OR c.verified = 0 OR c.customer_id IS NULL OR c.customer_id = '')
+        GROUP BY m.from_number
+        ORDER BY last_msg DESC
+        LIMIT 200
+      `;
+      try {
+        const { results } = await env.DB.prepare(sql).all();
+        return withCORS(Response.json(results));
+      } catch (e) {
+        return withCORS(new Response("DB error", { status: 500 }));
+      }
+    }
+
+    
     // --- Serve static HTML (optional: if you use Workers Sites/KV Assets) ---
     if (url.pathname === "/" || url.pathname === "/index.html") {
       if (env.ASSETS) {
