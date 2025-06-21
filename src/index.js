@@ -293,6 +293,18 @@ if (url.pathname === "/api/sales-chats" && request.method === "GET") {
       }
     }
 
+    // POST /api/customers-sync
+if (url.pathname === "/api/customers-sync" && request.method === "POST") {
+  const sql = `
+    INSERT OR IGNORE INTO customers (phone, name, email, verified)
+    SELECT DISTINCT from_number, '', '', 0
+    FROM messages
+    WHERE from_number NOT IN (SELECT phone FROM customers)
+  `;
+  await env.DB.prepare(sql).run();
+  return withCORS(Response.json({ ok: true, message: "Customers table synced with messages." }));
+}
+
     
     // --- Serve static HTML (optional: if you use Workers Sites/KV Assets) ---
     if (url.pathname === "/" || url.pathname === "/index.html") {
