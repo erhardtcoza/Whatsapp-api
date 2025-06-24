@@ -55,8 +55,8 @@ export default {
           return Response.json({ ok: true });
         }
 
-        const details = userInput.split(/[,
-]/).map(d => d.trim());
+const details = userInput.split(/[,\n]/).map(d => d.trim());
+        ]/).map(d => d.trim());
         const [name, email, customer_id] = details;
 
         await env.DB.prepare(`
