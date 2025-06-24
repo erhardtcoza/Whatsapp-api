@@ -39,7 +39,6 @@ export default {
       let userInput = "";
       let media_url = null;
       let location_json = null;
-      let rejectVoice = false;
 
       if (type === "text") {
         userInput = msgObj.text.body.trim();
@@ -47,13 +46,12 @@ export default {
         userInput = "[Image]";
         media_url = msgObj.image?.url || null;
       } else if (type === "audio") {
-        // Check for voice note (WhatsApp-specific)
+        // --- Voice note rejection ---
         if (msgObj.audio?.voice) {
-          // --- AUTO-REJECT VOICE NOTE ---
           const autoReply = "Sorry, but we cannot receive or process voice notes. Please send text or documents.";
           await sendWhatsAppMessage(from, autoReply, env);
-          // Log both incoming and outgoing auto-reply
           const now = Date.now();
+          // Log incoming voice note
           await env.DB.prepare(
             `INSERT INTO messages (from_number, body, tag, timestamp, direction, media_url)
              VALUES (?, ?, ?, ?, ?, ?)`
@@ -65,6 +63,7 @@ export default {
             "incoming",
             msgObj.audio?.url || null
           ).run();
+          // Log outgoing rejection message
           await env.DB.prepare(
             `INSERT INTO messages (from_number, body, tag, timestamp, direction)
              VALUES (?, ?, ?, ?, ?)`
@@ -80,7 +79,7 @@ export default {
             `INSERT OR IGNORE INTO customers (phone, name, email, verified)
              VALUES (?, '', '', 0)`
           ).bind(from).run();
-          // Don't process further
+          // Stop further processing
           return Response.json({ ok: true });
         } else {
           userInput = "[Audio]";
@@ -138,7 +137,7 @@ export default {
       return Response.json({ ok: true });
     }
 
-    // --- List chats for dashboard ---
+    // --- List chats for dashboard (OPEN only) ---
     if (url.pathname === "/api/chats" && request.method === "GET") {
       const sql = `
         SELECT
@@ -152,6 +151,30 @@ export default {
           (SELECT tag FROM messages m3 WHERE m3.from_number = m.from_number ORDER BY m3.timestamp DESC LIMIT 1) as tag
         FROM messages m
         LEFT JOIN customers c ON c.phone = m.from_number
+        WHERE (m.closed IS NULL OR m.closed = 0)
+        GROUP BY m.from_number
+        ORDER BY last_ts DESC
+        LIMIT 50
+      `;
+      const { results } = await env.DB.prepare(sql).all();
+      return withCORS(Response.json(results));
+    }
+
+    // --- List chats for dashboard (CLOSED only) ---
+    if (url.pathname === "/api/closed-chats" && request.method === "GET") {
+      const sql = `
+        SELECT
+          m.from_number,
+          c.name,
+          c.email,
+          c.customer_id,
+          MAX(m.timestamp) as last_ts,
+          (SELECT body FROM messages m2 WHERE m2.from_number = m.from_number ORDER BY m2.timestamp DESC LIMIT 1) as last_message,
+          SUM(CASE WHEN m.direction = 'incoming' AND (m.seen IS NULL OR m.seen = 0) THEN 1 ELSE 0 END) as unread_count,
+          (SELECT tag FROM messages m3 WHERE m3.from_number = m.from_number ORDER BY m3.timestamp DESC LIMIT 1) as tag
+        FROM messages m
+        LEFT JOIN customers c ON c.phone = m.from_number
+        WHERE m.closed = 1
         GROUP BY m.from_number
         ORDER BY last_ts DESC
         LIMIT 50
@@ -174,6 +197,16 @@ export default {
       `;
       const { results } = await env.DB.prepare(sql).bind(phone).all();
       return withCORS(Response.json(results));
+    }
+
+    // --- Close chat endpoint ---
+    if (url.pathname === "/api/close-chat" && request.method === "POST") {
+      const { phone } = await request.json();
+      if (!phone) return withCORS(new Response("Missing phone", { status: 400 }));
+      await env.DB.prepare(
+        `UPDATE messages SET closed=1 WHERE from_number=?`
+      ).bind(phone).run();
+      return withCORS(Response.json({ ok: true }));
     }
 
     // --- Send admin reply from dashboard ---
