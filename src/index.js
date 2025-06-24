@@ -263,6 +263,14 @@ export default {
       }
       return Response.json({ ok: true });
     }
+    
+// --- DELETE auto-reply ---
+if (url.pathname === "/api/auto-reply-delete" && request.method === "POST") {
+  const { id } = await request.json();
+  if (!id) return new Response("Missing id", { status: 400 });
+  await env.DB.prepare(`DELETE FROM auto_replies WHERE id=?`).bind(id).run();
+  return Response.json({ ok: true });
+}
 
     // --- GET all open support chats ---
     if (url.pathname === "/api/support-chats" && request.method === "GET") {
