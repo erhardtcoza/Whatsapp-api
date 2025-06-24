@@ -1,4 +1,9 @@
+
+// --- Full Combined index.js with webhook and admin endpoints ---
+
+import { getCustomerByPhone } from './splynx.js';
 import { sendWhatsAppMessage } from './whatsapp.js';
+import { routeCommand } from './commands.js';
 
 // --- CORS helper ---
 function withCORS(resp) {
@@ -12,17 +17,16 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
-    // --- Handle CORS preflight ---
+    // --- CORS preflight ---
     if (request.method === "OPTIONS" && url.pathname.startsWith("/api/")) {
       return withCORS(new Response("OK", { status: 200 }));
     }
 
     // --- WhatsApp webhook verification (GET) ---
     if (url.pathname === "/webhook" && request.method === "GET") {
-      const verify_token = url.searchParams.get("hub.verify_token");
+      const token = url.searchParams.get("hub.verify_token");
       const challenge = url.searchParams.get("hub.challenge");
-      if (verify_token === env.VERIFY_TOKEN)
-        return new Response(challenge, { status: 200 });
+      if (token === env.VERIFY_TOKEN) return new Response(challenge, { status: 200 });
       return new Response("Forbidden", { status: 403 });
     }
 
@@ -34,15 +38,14 @@ export default {
 
       const from = msgObj.from;
       const type = msgObj.type;
-      let userInput = msgObj.text?.body.trim().toLowerCase() || "";
+      const now = Date.now();
+      let userInput = msgObj.text?.body?.trim().toLowerCase() || "";
       let media_url = null;
       let location_json = null;
       const greetingKeywords = ["hi", "hello", "good day", "hey"];
 
-      const now = Date.now();
       let customer = await env.DB.prepare(`SELECT * FROM customers WHERE phone=?`).bind(from).first();
 
-      // Handle new or unverified customer
       if (!customer || customer.verified === 0) {
         if (greetingKeywords.includes(userInput)) {
           const reply = "Welcome! Please reply with your name, email address, and customer ID. If unsure, provide any information you have.";
@@ -52,8 +55,8 @@ export default {
           return Response.json({ ok: true });
         }
 
-        // Save provided customer details
-        const details = userInput.split(/[,\n]/).map(d => d.trim());
+        const details = userInput.split(/[,
+]/).map(d => d.trim());
         const [name, email, customer_id] = details;
 
         await env.DB.prepare(`
@@ -70,10 +73,12 @@ export default {
         return Response.json({ ok: true });
       }
 
-      // Handle verified customer
       if (customer.verified === 1) {
         if (greetingKeywords.includes(userInput)) {
-          const reply = `Welcome back ${customer.name}! How can we assist you today?\n1. Sales\n2. Accounts\n3. Support`;
+          const reply = `Welcome back ${customer.name}! How can we assist you today?
+1. Sales
+2. Accounts
+3. Support`;
           await sendWhatsAppMessage(from, reply, env);
           await env.DB.prepare(`INSERT INTO messages (from_number, body, tag, timestamp, direction) VALUES (?, ?, 'customer', ?, 'outgoing')`).bind(from, reply, now).run();
           return Response.json({ ok: true });
@@ -95,8 +100,7 @@ export default {
       return Response.json({ ok: true });
     }
 
-    // Existing API endpoints unchanged:
-    // Example endpoint:
+    // --- Example endpoint: chats ---
     if (url.pathname === "/api/chats" && request.method === "GET") {
       const { results } = await env.DB.prepare(`
         SELECT m.from_number, c.name, c.email, c.customer_id, MAX(m.timestamp) as last_ts,
@@ -113,7 +117,6 @@ export default {
       return withCORS(Response.json(results));
     }
 
-    // --- Serve static HTML ---
     if (url.pathname === "/" || url.pathname === "/index.html") {
       if (env.ASSETS) {
         const html = await env.ASSETS.fetch(new Request(url.origin + '/index.html'));
