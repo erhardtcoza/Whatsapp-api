@@ -3,34 +3,49 @@ const AUTH_HEADER = "Basic NTcxMDRhNGJjNjhhY2Y2MjRkMDliMmYwOTQ1ZTI1M2E6N2UyOTNmY
 
 export async function getCustomerByPhone(rawPhone, env) {
   try {
-    // 1) Normalize incoming phone to "27123456789"
+    // Normalize incoming phone to "27123456789" form
     let phone = rawPhone.replace(/^\+|^0/, "");
     if (!phone.startsWith("27")) phone = "27" + phone;
 
-    // 2) Construct search URL
-    const url = `https://splynx.vinet.co.za/api/2.0/admin/customers/search?phone=${encodeURIComponent(phone)}`;
-
-    // 3) Fetch from Splynx
-    const res = await fetch(url, {
+    // 1) Primary: search endpoint
+    const searchURL = `https://splynx.vinet.co.za/api/2.0/admin/customers/search?phone=${encodeURIComponent(phone)}`;
+    const res1 = await fetch(searchURL, {
       headers: {
         Authorization: AUTH_HEADER,
         "Content-Type": "application/json"
       }
     });
+    const json1 = await res1.json();
+    console.log('SPYLNX SEARCH JSON:', JSON.stringify(json1, null, 2));
 
-    // 4) Parse JSON
-    const json = await res.json();
+    if (res1.ok) {
+      const list = Array.isArray(json1.data) ? json1.data : [];
+      if (list.length) return list[0];
+    }
 
-    // DEBUG: log entire payload to worker logs
-    console.log('SPYLNX SEARCH JSON:', JSON.stringify(json, null, 2));
+    // 2) Fallback: legacy customer endpoint
+    const fallbackURL = `https://splynx.vinet.co.za/api/2.0/admin/customers/customer?main_phone=${encodeURIComponent(phone)}`;
+    const res2 = await fetch(fallbackURL, {
+      headers: {
+        Authorization: AUTH_HEADER,
+        "Content-Type": "application/json"
+      }
+    });
+    const json2 = await res2.json();
+    console.log('SPYLNX FALLBACK JSON:', JSON.stringify(json2, null, 2));
 
-    // 5) Extract data array
-    const list = Array.isArray(json.data) ? json.data : [];
+    if (res2.ok) {
+      if (Array.isArray(json2)) {
+        return json2.length ? json2[0] : null;
+      }
+      if (json2 && typeof json2 === 'object') {
+        return json2;
+      }
+    }
 
-    // 6) Return first record or null
-    return list.length ? list[0] : null;
+    return null;
   } catch (err) {
-    console.error('SPYLNX SEARCH ERROR:', err);
+    console.error('SPYLNX ERROR:', err);
     return null;
   }
 }
