@@ -18,24 +18,16 @@ async function fetchJson(url) {
 }
 
 export async function getCustomerByPhone(rawPhone, env) {
-  // 1) Normalize to “27123456789”
+  // Normalize to “27123456789”
   let phone = rawPhone.replace(/^\+|^0/, "");
   if (!phone.startsWith("27")) phone = "27" + phone;
 
-  // 2) Primary search by phone
-  const url1 = `https://splynx.vinet.co.za/api/2.0/customers/search?phone=${encodeURIComponent(phone)}`;
-  const json1 = await fetchJson(url1);
-  if (json1?.data && Array.isArray(json1.data) && json1.data.length) {
-    return json1.data[0];
-  }
+  // Only call the documented search endpoint
+  const url = `https://splynx.vinet.co.za/api/2.0/customers/search?phone=${encodeURIComponent(phone)}`;
+  const json = await fetchJson(url);
 
-  // 3) Secondary search by main_phone
-  const url2 = `https://splynx.vinet.co.za/api/2.0/customers/search?main_phone=${encodeURIComponent(phone)}`;
-  const json2 = await fetchJson(url2);
-  if (json2?.data && Array.isArray(json2.data) && json2.data.length) {
-    return json2.data[0];
+  if (json?.data && Array.isArray(json.data) && json.data.length) {
+    return json.data[0];
   }
-
-  // 4) No match
   return null;
 }
