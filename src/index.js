@@ -33,28 +33,22 @@ export default {
       if (!msgObj) return Response.json({ ok: true });
 
       const from = msgObj.from;
-      const userInput = msgObj.text?.body.trim().toLowerCase() || "";
+      const type = msgObj.type;
+      let userInput = msgObj.text?.body.trim().toLowerCase() || "";
+      let media_url = null;
+      let location_json = null;
       const greetingKeywords = ["hi", "hello", "good day", "hey"];
 
+      const now = Date.now();
       let customer = await env.DB.prepare(`SELECT * FROM customers WHERE phone=?`).bind(from).first();
 
-      const now = Date.now();
-
-      // New or unverified customer greeting
+      // Handle new or unverified customer
       if (!customer || customer.verified === 0) {
         if (greetingKeywords.includes(userInput)) {
           const reply = "Welcome! Please reply with your name, email address, and customer ID. If unsure, provide any information you have.";
           await sendWhatsAppMessage(from, reply, env);
-
-          if (!customer) {
-            await env.DB.prepare(`INSERT INTO customers (phone, verified) VALUES (?, 0)`).bind(from).run();
-          }
-
-          await env.DB.prepare(
-            `INSERT INTO messages (from_number, body, tag, timestamp, direction)
-             VALUES (?, ?, ?, ?, ?)`
-          ).bind(from, reply, "unverified", now, "outgoing").run();
-
+          await env.DB.prepare(`INSERT OR IGNORE INTO customers (phone, verified) VALUES (?, 0)`).bind(from).run();
+          await env.DB.prepare(`INSERT INTO messages (from_number, body, tag, timestamp, direction) VALUES (?, ?, 'unverified', ?, 'outgoing')`).bind(from, reply, now).run();
           return Response.json({ ok: true });
         }
 
@@ -72,26 +66,16 @@ export default {
 
         const reply = "Thanks! Our team will verify your details soon.";
         await sendWhatsAppMessage(from, reply, env);
-
-        await env.DB.prepare(
-          `INSERT INTO messages (from_number, body, tag, timestamp, direction)
-           VALUES (?, ?, ?, ?, ?)`
-        ).bind(from, reply, "unverified", now, "outgoing").run();
-
+        await env.DB.prepare(`INSERT INTO messages (from_number, body, tag, timestamp, direction) VALUES (?, ?, 'unverified', ?, 'outgoing')`).bind(from, reply, now).run();
         return Response.json({ ok: true });
       }
 
-      // Verified customer workflow
+      // Handle verified customer
       if (customer.verified === 1) {
         if (greetingKeywords.includes(userInput)) {
           const reply = `Welcome back ${customer.name}! How can we assist you today?\n1. Sales\n2. Accounts\n3. Support`;
           await sendWhatsAppMessage(from, reply, env);
-
-          await env.DB.prepare(
-            `INSERT INTO messages (from_number, body, tag, timestamp, direction)
-             VALUES (?, ?, ?, ?, ?)`
-          ).bind(from, reply, "customer", now, "outgoing").run();
-
+          await env.DB.prepare(`INSERT INTO messages (from_number, body, tag, timestamp, direction) VALUES (?, ?, 'customer', ?, 'outgoing')`).bind(from, reply, now).run();
           return Response.json({ ok: true });
         }
 
@@ -104,19 +88,15 @@ export default {
 
         const reply = `You've been connected with ${tag}. How may we assist you further?`;
         await sendWhatsAppMessage(from, reply, env);
-
-        await env.DB.prepare(
-          `INSERT INTO messages (from_number, body, tag, timestamp, direction)
-           VALUES (?, ?, ?, ?, ?)`
-        ).bind(from, reply, tag, now, "outgoing").run();
-
+        await env.DB.prepare(`INSERT INTO messages (from_number, body, tag, timestamp, direction) VALUES (?, ?, ?, ?, 'outgoing')`).bind(from, reply, tag, now).run();
         return Response.json({ ok: true });
       }
 
       return Response.json({ ok: true });
     }
 
-    // --- Existing API Routes (unchanged) ---
+    // Existing API endpoints unchanged:
+    // Example endpoint:
     if (url.pathname === "/api/chats" && request.method === "GET") {
       const { results } = await env.DB.prepare(`
         SELECT m.from_number, c.name, c.email, c.customer_id, MAX(m.timestamp) as last_ts,
@@ -132,8 +112,6 @@ export default {
       `).all();
       return withCORS(Response.json(results));
     }
-
-    // Other existing routes remain unchanged here...
 
     // --- Serve static HTML ---
     if (url.pathname === "/" || url.pathname === "/index.html") {
