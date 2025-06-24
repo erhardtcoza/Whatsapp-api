@@ -392,6 +392,32 @@ export default {
       return withCORS(Response.json({ ok: true }));
     }
 
+// --- GET office hours for all tags
+if (url.pathname === "/api/office-hours" && request.method === "GET") {
+  const { results } = await env.DB.prepare(
+    "SELECT * FROM office_hours"
+  ).all();
+  return withCORS(Response.json(results));
+}
+
+// --- UPDATE office hours for a tag/day
+if (url.pathname === "/api/office-hours" && request.method === "POST") {
+  const { tag, day, open_time, close_time, closed } = await request.json();
+  if (typeof tag !== "string" || typeof day !== "number") {
+    return withCORS(new Response("Missing fields", { status: 400 }));
+  }
+  await env.DB.prepare(
+    `INSERT INTO office_hours (tag, day, open_time, close_time, closed)
+     VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(tag, day) DO UPDATE SET
+       open_time=excluded.open_time,
+       close_time=excluded.close_time,
+       closed=excluded.closed`
+  ).bind(tag, day, open_time, close_time, closed ? 1 : 0).run();
+  return withCORS(Response.json({ ok: true }));
+}
+
+    
     // --- Serve static HTML ---
     if (url.pathname === "/" || url.pathname === "/index.html") {
       if (env.ASSETS) {
