@@ -1,12 +1,11 @@
-import { getCustomerByPhone } from './splynx.js';
 import { sendWhatsAppMessage } from './whatsapp.js';
-import { routeCommand } from './commands.js';
+import { routeCommand }        from './commands.js';
 
-// --- CORS helper ---
+// CORS helper
 function withCORS(resp) {
-  resp.headers.set("Access-Control-Allow-Origin", "*");
-  resp.headers.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  resp.headers.set("Access-Control-Allow-Headers", "*");
+  resp.headers.set('Access-Control-Allow-Origin','*');
+  resp.headers.set('Access-Control-Allow-Methods','GET,POST,OPTIONS');
+  resp.headers.set('Access-Control-Allow-Headers','*');
   return resp;
 }
 
@@ -14,221 +13,147 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
-    // CORS preflight
-    if (request.method === "OPTIONS" && url.pathname.startsWith("/api/")) {
-      return withCORS(new Response("OK", { status: 200 }));
+    // --- CORS preflight ---
+    if (request.method === 'OPTIONS' && url.pathname.startsWith('/api/')) {
+      return withCORS(new Response('OK', { status:200 }));
     }
 
-    // Verification
-    if (url.pathname === "/webhook" && request.method === "GET") {
-      const token     = url.searchParams.get("hub.verify_token");
-      const challenge = url.searchParams.get("hub.challenge");
-      if (token === env.VERIFY_TOKEN) return new Response(challenge, { status: 200 });
-      return new Response("Forbidden", { status: 403 });
-    }
-
-    // Webhook handler
-    if (url.pathname === "/webhook" && request.method === "POST") {
+    // --- WhatsApp webhook (POST) ---
+    if (url.pathname === '/webhook' && request.method === 'POST') {
       const payload = await request.json();
       const msgObj  = payload.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
-      if (!msgObj) return Response.json({ ok: true });
+      if (!msgObj) return Response.json({ ok:true });
 
-      const rawFrom = msgObj.from;
-      const now     = Date.now();
+      const from = msgObj.from;
+      const now  = Date.now();
 
-      // Normalize phone
-      let normPhone = rawFrom.replace(/^\+|^0/, "");
-      if (!normPhone.startsWith("27")) normPhone = "27" + normPhone;
-
-      // Capture text
-      let userInput = "";
-      if (msgObj.type === "text") {
-        userInput = msgObj.text.body.trim();
-      }
-
-      // Load session
-      const sess = await env.DB.prepare(
-        `SELECT email, customer_id, verified, last_seen, department
-           FROM sessions WHERE phone = ?`
-      ).bind(rawFrom).first();
-
-      const ninety = 90 * 24 * 60 * 60 * 1000;
-      const expired = !sess || sess.verified === 0 || (sess.last_seen + ninety <= now);
-
-      // Authentication flow
-      if (expired) {
-        const m = userInput.match(/^(\S+)[\s,]+(\S+@\S+\.\S+)$/);
-        if (sess && sess.verified === 0 && m) {
-          const providedLogin = m[1];
-          const providedEmail = m[2].toLowerCase();
-          const customer      = await getCustomerByPhone(normPhone, env);
-
-          if (!customer) {
-            const leadMsg =
-              "We couldn’t find your number. Send name, address & email to create a lead.";
-            await sendWhatsAppMessage(rawFrom, leadMsg, env);
-            await env.DB.prepare(
-              `INSERT INTO messages
-                 (from_number, body, tag, timestamp, direction)
-               VALUES (?, ?, 'lead', ?, 'outgoing')`
-            ).bind(rawFrom, leadMsg, now).run();
-            return Response.json({ ok: true });
-          }
-
-          // Use login field
-          const realLogin = String(customer.login);
-          const realEmail = (customer.email || "").toLowerCase();
-
-          // Accept exact or numeric match
-          const loginMatch =
-            providedLogin === realLogin ||
-            parseInt(providedLogin, 10) === parseInt(realLogin, 10);
-
-          if (loginMatch && providedEmail === realEmail) {
-            await env.DB.prepare(
-              `INSERT INTO sessions
-                 (phone, email, customer_id, verified, last_seen, department)
-               VALUES (?, ?, ?, 1, ?, NULL)
-               ON CONFLICT(phone) DO UPDATE SET
-                 email=excluded.email,
-                 customer_id=excluded.customer_id,
-                 verified=1,
-                 last_seen=excluded.last_seen`
-            ).bind(rawFrom, providedEmail, providedLogin, now).run();
-
-            const menu =
-              "✅ Verified! How can we assist?\n" +
-              "1. Sales\n" +
-              "2. Accounts\n" +
-              "3. Support";
-            await sendWhatsAppMessage(rawFrom, menu, env);
-            await env.DB.prepare(
-              `INSERT INTO messages
-                 (from_number, body, tag, timestamp, direction)
-               VALUES (?, ?, 'system', ?, 'outgoing')`
-            ).bind(rawFrom, menu, now).run();
-            return Response.json({ ok: true });
-          } else {
-            const hint =
-              `Our records: login ${realLogin}, email ${realEmail}.`;
-            const retry =
-              "❌ Didn’t match.\n" +
-              `${hint}\n` +
-              "Provide your login and email again (e.g. 000000001, you@example.com).";
-            await sendWhatsAppMessage(rawFrom, retry, env);
-            await env.DB.prepare(
-              `INSERT INTO messages
-                 (from_number, body, tag, timestamp, direction)
-               VALUES (?, ?, 'system', ?, 'outgoing')`
-            ).bind(rawFrom, retry, now).run();
-            return Response.json({ ok: true });
-          }
-        }
-
-        // Prompt for credentials
-        await env.DB.prepare(
-          `INSERT INTO sessions
-             (phone, email, customer_id, verified, last_seen, department)
-           VALUES (?, '', '', 0, ?, NULL)
-           ON CONFLICT(phone) DO UPDATE SET
-             verified=0,
-             last_seen=excluded.last_seen`
-        ).bind(rawFrom, now).run();
-
-        const prompt =
-          "Please provide your Splynx login and email\n" +
-          "(e.g. 000000001, you@example.com).";
-        await sendWhatsAppMessage(rawFrom, prompt, env);
-        await env.DB.prepare(
-          `INSERT INTO messages
-             (from_number, body, tag, timestamp, direction)
-           VALUES (?, ?, 'system', ?, 'outgoing')`
-        ).bind(rawFrom, prompt, now).run();
-        return Response.json({ ok: true });
-      }
-
-      // Verified session → refresh
+      // 1) Ensure session exists (or update last_seen)
       await env.DB.prepare(
-        `UPDATE sessions SET last_seen = ? WHERE phone = ?`
-      ).bind(now, rawFrom).run();
+        `INSERT INTO sessions
+           (phone, verified, last_seen)
+         VALUES (?, 0, ?)
+         ON CONFLICT(phone) DO UPDATE SET
+           last_seen=excluded.last_seen`
+      ).bind(from, now).run();
 
-      // Department & ticket
-      if (!sess.department && userInput) {
-        let dept;
-        if (userInput === "1") dept = "sales";
-        else if (userInput === "2") dept = "accounts";
-        else if (userInput === "3") dept = "support";
+      // 2) Extract userInput + media/location
+      let userInput = '';
+      let media_url = null;
+      let loc_json  = null;
 
-        if (dept) {
-          await env.DB.prepare(
-            `UPDATE sessions SET department = ?, last_seen = ? WHERE phone = ?`
-          ).bind(dept, now, rawFrom).run();
-
-          const date   = new Date().toISOString().slice(0,10).replace(/-/g,"");
-          const ticket = `TKT-${date}-${Math.floor(Math.random()*9000+1000)}`;
-
-          await env.DB.prepare(
-            `INSERT INTO chatsessions
-               (phone, ticket, department, start_ts)
-             VALUES (?, ?, ?, ?)`
-          ).bind(rawFrom, ticket, dept, now).run();
-
-          const ack =
-            `✅ Your ticket: *${ticket}* (Dept: ${dept}).\n` +
-            `How can we help?`;
-          await sendWhatsAppMessage(rawFrom, ack, env);
-          await env.DB.prepare(
-            `INSERT INTO messages
-               (from_number, body, tag, timestamp, direction)
-             VALUES (?, ?, 'ticket', ?, 'outgoing')`
-          ).bind(rawFrom, ack, now).run();
-          return Response.json({ ok: true });
-        }
-      }
-
-      // Normal chat
-      let media_url = null, location_json = null;
-      if (msgObj.type === "image") {
-        userInput = "[Image]"; media_url = msgObj.image?.url || null;
-      } else if (msgObj.type === "audio") {
-        userInput = "[Audio]"; media_url = msgObj.audio?.url || null;
-      } else if (msgObj.type === "document") {
-        userInput = "[Document]"; media_url = msgObj.document?.url || null;
-      } else if (msgObj.type === "location") {
+      if (msgObj.type === 'text') {
+        userInput = msgObj.text.body.trim();
+      } else if (msgObj.type === 'image') {
+        userInput = '[Image]';
+        media_url = msgObj.image?.url || null;
+      } else if (msgObj.type === 'location') {
         userInput = `[LOCATION: ${msgObj.location.latitude},${msgObj.location.longitude}]`;
-        location_json = JSON.stringify(msgObj.location);
+        loc_json = JSON.stringify(msgObj.location);
+      } else {
+        userInput = `[${msgObj.type.toUpperCase()}]`;
+        media_url = msgObj[msgObj.type]?.url || null;
       }
 
-      const customer = await getCustomerByPhone(normPhone, env) || null;
-      const reply   = await routeCommand({ userInput, customer, env });
-      await sendWhatsAppMessage(rawFrom, reply, env);
+      // 3) Business logic (your existing router)
+      const reply = await routeCommand({ userInput, env });
 
+      // 4) Send the reply
+      await sendWhatsAppMessage(from, reply, env);
+
+      // 5) Log incoming
       await env.DB.prepare(
         `INSERT INTO messages
-           (from_number, body, tag, timestamp, direction, media_url, location_json)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`
-      ).bind(
-        rawFrom, userInput,
-        customer ? "customer" : "lead",
-        now, "incoming",
-        media_url, location_json
-      ).run();
+           (from_number, body, timestamp, direction, media_url, location_json)
+         VALUES (?, ?, ?, 'incoming', ?, ?)`
+      ).bind(from, userInput, now, media_url, loc_json).run();
 
-      await env.DB.prepare(
-        `INSERT OR IGNORE INTO customers (phone, name, email, verified)
-         VALUES (?, '', '', 0)`
-      ).bind(rawFrom).run();
-
+      // 6) Log outgoing
       await env.DB.prepare(
         `INSERT INTO messages
            (from_number, body, tag, timestamp, direction)
-         VALUES (?, ?, ?, ?, ?)`
-      ).bind(rawFrom, reply, customer ? "customer" : "lead", now, "outgoing").run();
+         VALUES (?, ?, 'outgoing', ?, 'outgoing')`
+      ).bind(from, reply, now).run();
 
-      return Response.json({ ok: true });
+      return Response.json({ ok:true });
     }
 
-    // API endpoints unchanged...
-    return new Response("Not found", { status: 404 });
+    // --- Fetch chats for dashboard ---
+    if (url.pathname === '/api/chats' && request.method === 'GET') {
+      const sql = `
+        SELECT
+          m.from_number,
+          c.customer_id,
+          c.name,
+          MAX(m.timestamp) AS last_ts,
+          SUM(CASE WHEN m.direction='incoming' AND (m.seen IS NULL OR m.seen=0) THEN 1 ELSE 0 END) AS unread
+        FROM messages m
+        LEFT JOIN customers c ON c.phone=m.from_number
+        GROUP BY m.from_number
+        ORDER BY last_ts DESC
+        LIMIT 50`;
+      const { results } = await env.DB.prepare(sql).all();
+      return withCORS(Response.json(results));
+    }
+
+    // --- List messages ---
+    if (url.pathname === '/api/messages' && request.method === 'GET') {
+      const phone = url.searchParams.get('phone');
+      if (!phone) return withCORS(new Response('Missing phone', { status:400 }));
+      const sql = `
+        SELECT id, from_number, body, timestamp, direction, media_url, location_json
+        FROM messages
+        WHERE from_number=?
+        ORDER BY timestamp ASC
+        LIMIT 200`;
+      const { results } = await env.DB.prepare(sql).bind(phone).all();
+      return withCORS(Response.json(results));
+    }
+
+    // --- Send reply from UI ---
+    if (url.pathname === '/api/send-message' && request.method === 'POST') {
+      const { phone, body } = await request.json();
+      if (!phone || !body) return withCORS(new Response('Missing', { status:400 }));
+      await sendWhatsAppMessage(phone, body, env);
+      const ts = Date.now();
+      await env.DB.prepare(
+        `INSERT INTO messages
+           (from_number, body, tag, timestamp, direction)
+         VALUES (?, ?, 'outgoing', ?, 'outgoing')`
+      ).bind(phone, body, ts).run();
+      return withCORS(Response.json({ ok:true }));
+    }
+
+    // --- Update customer details (manual form) ---
+    if (url.pathname === '/api/update-customer' && request.method === 'POST') {
+      const { phone, customer_id, first_name, last_name } = await request.json();
+      if (!phone) return withCORS(new Response('Missing phone', { status:400 }));
+      const fullName = `${first_name.trim()} ${last_name.trim()}`.trim();
+      await env.DB.prepare(`
+        INSERT INTO customers (phone, customer_id, name, verified)
+        VALUES (?, ?, ?, 1)
+        ON CONFLICT(phone) DO UPDATE SET
+          customer_id=excluded.customer_id,
+          name=excluded.name,
+          verified=1
+      `).bind(phone, customer_id, fullName).run();
+      return withCORS(Response.json({ ok:true }));
+    }
+
+    // --- Close chat (archive) ---
+    if (url.pathname === '/api/close-chat' && request.method === 'POST') {
+      const { phone } = await request.json();
+      await env.DB.prepare(
+        `UPDATE messages SET closed=1 WHERE from_number=?`
+      ).bind(phone).run();
+      return withCORS(Response.json({ ok:true }));
+    }
+
+    // --- Static assets & fallback ---
+    if (url.pathname==='/'||url.pathname==='/index.html') {
+      if (env.ASSETS) return env.ASSETS.fetch(new Request(url.origin+'/index.html'));
+      return new Response('Missing assets', { status:404 });
+    }
+
+    return new Response('Not found', { status:404 });
   }
 };
