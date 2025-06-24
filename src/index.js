@@ -1,6 +1,4 @@
-import { getCustomerByPhone } from './splynx.js';
 import { sendWhatsAppMessage } from './whatsapp.js';
-import { routeCommand } from './commands.js';
 
 // --- CORS helper ---
 function withCORS(resp) {
@@ -11,224 +9,182 @@ function withCORS(resp) {
 }
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
-    // CORS preflight
+    // --- CORS preflight ---
     if (request.method === "OPTIONS" && url.pathname.startsWith("/api/")) {
       return withCORS(new Response("OK", { status: 200 }));
     }
 
-    // Verification
+    // --- Webhook verification ---
     if (url.pathname === "/webhook" && request.method === "GET") {
-      const token     = url.searchParams.get("hub.verify_token");
+      const token = url.searchParams.get("hub.verify_token");
       const challenge = url.searchParams.get("hub.challenge");
       if (token === env.VERIFY_TOKEN) return new Response(challenge, { status: 200 });
       return new Response("Forbidden", { status: 403 });
     }
 
-    // Webhook handler
+    // --- WhatsApp webhook ---
     if (url.pathname === "/webhook" && request.method === "POST") {
       const payload = await request.json();
-      const msgObj  = payload.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
+      const msgObj = payload?.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
       if (!msgObj) return Response.json({ ok: true });
 
-      const rawFrom = msgObj.from;
-      const now     = Date.now();
+      const from = msgObj.from;
+      const type = msgObj.type;
+      const now = Date.now();
+      let userInput = msgObj.text?.body?.trim() || "";
+      let tag = "lead";
 
-      // Normalize phone
-      let normPhone = rawFrom.replace(/^\+|^0/, "");
-      if (!normPhone.startsWith("27")) normPhone = "27" + normPhone;
+      const greetingKeywords = ["hi", "hello", "good day", "hey"];
+      let customer = await env.DB.prepare(`SELECT * FROM customers WHERE phone=?`).bind(from).first();
 
-      // Capture text
-      let userInput = "";
-      if (msgObj.type === "text") {
-        userInput = msgObj.text.body.trim();
-      }
-
-      // Load session
-      const sess = await env.DB.prepare(
-        `SELECT email, customer_id, verified, last_seen, department
-           FROM sessions WHERE phone = ?`
-      ).bind(rawFrom).first();
-
-      const ninety = 90 * 24 * 60 * 60 * 1000;
-      const expired = !sess || sess.verified === 0 || (sess.last_seen + ninety <= now);
-
-      // Authentication flow
-      if (expired) {
-        const m = userInput.match(/^(\S+)[\s,]+(\S+@\S+\.\S+)$/);
-        if (sess && sess.verified === 0 && m) {
-          const providedLogin = m[1];
-          const providedEmail = m[2].toLowerCase();
-          const customer      = await getCustomerByPhone(normPhone, env);
-
-          if (!customer) {
-            const leadMsg =
-              "We couldn’t find your number. Send name, address & email to create a lead.";
-            await sendWhatsAppMessage(rawFrom, leadMsg, env);
-            await env.DB.prepare(
-              `INSERT INTO messages
-                 (from_number, body, tag, timestamp, direction)
-               VALUES (?, ?, 'lead', ?, 'outgoing')`
-            ).bind(rawFrom, leadMsg, now).run();
-            return Response.json({ ok: true });
-          }
-
-          // Use login field
-          const realLogin = String(customer.login);
-          const realEmail = (customer.email || "").toLowerCase();
-
-          // Accept exact or numeric match
-          const loginMatch =
-            providedLogin === realLogin ||
-            parseInt(providedLogin, 10) === parseInt(realLogin, 10);
-
-          if (loginMatch && providedEmail === realEmail) {
-            await env.DB.prepare(
-              `INSERT INTO sessions
-                 (phone, email, customer_id, verified, last_seen, department)
-               VALUES (?, ?, ?, 1, ?, NULL)
-               ON CONFLICT(phone) DO UPDATE SET
-                 email=excluded.email,
-                 customer_id=excluded.customer_id,
-                 verified=1,
-                 last_seen=excluded.last_seen`
-            ).bind(rawFrom, providedEmail, providedLogin, now).run();
-
-            const menu =
-              "✅ Verified! How can we assist?\n" +
-              "1. Sales\n" +
-              "2. Accounts\n" +
-              "3. Support";
-            await sendWhatsAppMessage(rawFrom, menu, env);
-            await env.DB.prepare(
-              `INSERT INTO messages
-                 (from_number, body, tag, timestamp, direction)
-               VALUES (?, ?, 'system', ?, 'outgoing')`
-            ).bind(rawFrom, menu, now).run();
-            return Response.json({ ok: true });
-          } else {
-            const hint =
-              `Our records: login ${realLogin}, email ${realEmail}.`;
-            const retry =
-              "❌ Didn’t match.\n" +
-              `${hint}\n` +
-              "Provide your login and email again (e.g. 000000001, you@example.com).";
-            await sendWhatsAppMessage(rawFrom, retry, env);
-            await env.DB.prepare(
-              `INSERT INTO messages
-                 (from_number, body, tag, timestamp, direction)
-               VALUES (?, ?, 'system', ?, 'outgoing')`
-            ).bind(rawFrom, retry, now).run();
-            return Response.json({ ok: true });
-          }
+      // 1. Unverified flow
+      if (!customer || customer.verified === 0) {
+        if (greetingKeywords.includes(userInput.toLowerCase())) {
+          const welcome = "Welcome! Please reply with your name, email address, and customer ID. If unsure, send whatever you have.";
+          await sendWhatsAppMessage(from, welcome, env);
+          await env.DB.prepare(`INSERT OR IGNORE INTO customers (phone, verified) VALUES (?, 0)`).bind(from).run();
+          await env.DB.prepare(`INSERT INTO messages (from_number, body, tag, timestamp, direction) VALUES (?, ?, 'system', ?, 'outgoing')`).bind(from, welcome, now).run();
+          return Response.json({ ok: true });
         }
 
-        // Prompt for credentials
-        await env.DB.prepare(
-          `INSERT INTO sessions
-             (phone, email, customer_id, verified, last_seen, department)
-           VALUES (?, '', '', 0, ?, NULL)
-           ON CONFLICT(phone) DO UPDATE SET
-             verified=0,
-             last_seen=excluded.last_seen`
-        ).bind(rawFrom, now).run();
+        const details = userInput.split(/[,\n]/).map(d => d.trim());
+        const [name, email, customer_id] = details;
 
-        const prompt =
-          "Please provide your Splynx login and email\n" +
-          "(e.g. 000000001, you@example.com).";
-        await sendWhatsAppMessage(rawFrom, prompt, env);
-        await env.DB.prepare(
-          `INSERT INTO messages
-             (from_number, body, tag, timestamp, direction)
-           VALUES (?, ?, 'system', ?, 'outgoing')`
-        ).bind(rawFrom, prompt, now).run();
+        await env.DB.prepare(`
+          UPDATE customers SET 
+            name = COALESCE(?, name),
+            email = COALESCE(?, email),
+            customer_id = COALESCE(?, customer_id)
+          WHERE phone = ?
+        `).bind(name || null, email || null, customer_id || null, from).run();
+
+        const ack = "Thanks! Our team will verify your details shortly.";
+        await sendWhatsAppMessage(from, ack, env);
+        await env.DB.prepare(`INSERT INTO messages (from_number, body, tag, timestamp, direction) VALUES (?, ?, 'system', ?, 'outgoing')`).bind(from, ack, now).run();
         return Response.json({ ok: true });
       }
 
-      // Verified session → refresh
-      await env.DB.prepare(
-        `UPDATE sessions SET last_seen = ? WHERE phone = ?`
-      ).bind(now, rawFrom).run();
-
-      // Department & ticket
-      if (!sess.department && userInput) {
-        let dept;
-        if (userInput === "1") dept = "sales";
-        else if (userInput === "2") dept = "accounts";
-        else if (userInput === "3") dept = "support";
-
-        if (dept) {
-          await env.DB.prepare(
-            `UPDATE sessions SET department = ?, last_seen = ? WHERE phone = ?`
-          ).bind(dept, now, rawFrom).run();
-
-          const date   = new Date().toISOString().slice(0,10).replace(/-/g,"");
-          const ticket = `TKT-${date}-${Math.floor(Math.random()*9000+1000)}`;
-
-          await env.DB.prepare(
-            `INSERT INTO chatsessions
-               (phone, ticket, department, start_ts)
-             VALUES (?, ?, ?, ?)`
-          ).bind(rawFrom, ticket, dept, now).run();
-
-          const ack =
-            `✅ Your ticket: *${ticket}* (Dept: ${dept}).\n` +
-            `How can we help?`;
-          await sendWhatsAppMessage(rawFrom, ack, env);
-          await env.DB.prepare(
-            `INSERT INTO messages
-               (from_number, body, tag, timestamp, direction)
-             VALUES (?, ?, 'ticket', ?, 'outgoing')`
-          ).bind(rawFrom, ack, now).run();
+      // 2. Verified users
+      if (customer.verified === 1) {
+        if (greetingKeywords.includes(userInput.toLowerCase())) {
+          const greet = `Welcome back ${customer.name || ""}! How can we assist you?\n1. Sales\n2. Accounts\n3. Support`;
+          await sendWhatsAppMessage(from, greet, env);
+          await env.DB.prepare(`INSERT INTO messages (from_number, body, tag, timestamp, direction) VALUES (?, ?, 'system', ?, 'outgoing')`).bind(from, greet, now).run();
           return Response.json({ ok: true });
         }
+
+        if (userInput === "1") tag = "sales";
+        else if (userInput === "2") tag = "accounts";
+        else if (userInput === "3") tag = "support";
+        else tag = "customer";
+
+        await env.DB.prepare(`INSERT INTO messages (from_number, body, tag, timestamp, direction) VALUES (?, ?, ?, ?, 'incoming')`).bind(from, userInput, tag, now).run();
+
+        const reply = `You've been connected with ${tag}. How can we assist further?`;
+        await sendWhatsAppMessage(from, reply, env);
+        await env.DB.prepare(`INSERT INTO messages (from_number, body, tag, timestamp, direction) VALUES (?, ?, ?, ?, 'outgoing')`).bind(from, reply, tag, now).run();
+        return Response.json({ ok: true });
       }
-
-      // Normal chat
-      let media_url = null, location_json = null;
-      if (msgObj.type === "image") {
-        userInput = "[Image]"; media_url = msgObj.image?.url || null;
-      } else if (msgObj.type === "audio") {
-        userInput = "[Audio]"; media_url = msgObj.audio?.url || null;
-      } else if (msgObj.type === "document") {
-        userInput = "[Document]"; media_url = msgObj.document?.url || null;
-      } else if (msgObj.type === "location") {
-        userInput = `[LOCATION: ${msgObj.location.latitude},${msgObj.location.longitude}]`;
-        location_json = JSON.stringify(msgObj.location);
-      }
-
-      const customer = await getCustomerByPhone(normPhone, env) || null;
-      const reply   = await routeCommand({ userInput, customer, env });
-      await sendWhatsAppMessage(rawFrom, reply, env);
-
-      await env.DB.prepare(
-        `INSERT INTO messages
-           (from_number, body, tag, timestamp, direction, media_url, location_json)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`
-      ).bind(
-        rawFrom, userInput,
-        customer ? "customer" : "lead",
-        now, "incoming",
-        media_url, location_json
-      ).run();
-
-      await env.DB.prepare(
-        `INSERT OR IGNORE INTO customers (phone, name, email, verified)
-         VALUES (?, '', '', 0)`
-      ).bind(rawFrom).run();
-
-      await env.DB.prepare(
-        `INSERT INTO messages
-           (from_number, body, tag, timestamp, direction)
-         VALUES (?, ?, ?, ?, ?)`
-      ).bind(rawFrom, reply, customer ? "customer" : "lead", now, "outgoing").run();
 
       return Response.json({ ok: true });
     }
 
-    // API endpoints unchanged...
+    // --- API ROUTES ---
+
+    if (url.pathname === "/api/chats" && request.method === "GET") {
+      const { results } = await env.DB.prepare(`
+        SELECT m.from_number, c.name, c.email, c.customer_id,
+               MAX(m.timestamp) AS last_ts,
+               (SELECT body FROM messages m2 WHERE m2.from_number = m.from_number ORDER BY m2.timestamp DESC LIMIT 1) AS last_message,
+               SUM(CASE WHEN m.direction='incoming' AND (m.seen IS NULL OR m.seen = 0) THEN 1 ELSE 0 END) AS unread_count,
+               (SELECT tag FROM messages m3 WHERE m3.from_number = m.from_number ORDER BY m3.timestamp DESC LIMIT 1) AS tag
+        FROM messages m
+        LEFT JOIN customers c ON m.from_number = c.phone
+        WHERE (m.closed IS NULL OR m.closed = 0)
+        GROUP BY m.from_number
+        ORDER BY last_ts DESC
+        LIMIT 50
+      `).all();
+      return withCORS(Response.json(results));
+    }
+
+    if (url.pathname === "/api/messages" && request.method === "GET") {
+      const phone = url.searchParams.get("phone");
+      const { results } = await env.DB.prepare(`
+        SELECT id, from_number, body, tag, timestamp, direction, media_url, location_json
+        FROM messages WHERE from_number=? ORDER BY timestamp ASC LIMIT 200
+      `).bind(phone).all();
+      return withCORS(Response.json(results));
+    }
+
+    if (url.pathname === "/api/send-message" && request.method === "POST") {
+      const { phone, body } = await request.json();
+      await sendWhatsAppMessage(phone, body, env);
+      const ts = Date.now();
+      await env.DB.prepare(`INSERT INTO messages (from_number, body, tag, timestamp, direction, seen) VALUES (?, ?, 'outgoing', ?, 'outgoing', 1)`).bind(phone, body, ts).run();
+      return withCORS(Response.json({ ok: true }));
+    }
+
+    if (url.pathname === "/api/close-chat" && request.method === "POST") {
+      const { phone } = await request.json();
+      await env.DB.prepare(`UPDATE messages SET closed=1 WHERE from_number=?`).bind(phone).run();
+      return withCORS(Response.json({ ok: true }));
+    }
+
+    if (url.pathname === "/api/update-customer" && request.method === "POST") {
+      const { phone, name, email, customer_id } = await request.json();
+      await env.DB.prepare(`
+        INSERT INTO customers (phone, name, email, customer_id, verified)
+        VALUES (?, ?, ?, ?, 1)
+        ON CONFLICT(phone) DO UPDATE SET
+          name=excluded.name,
+          email=excluded.email,
+          customer_id=excluded.customer_id,
+          verified=1
+      `).bind(phone, name, email, customer_id).run();
+      return withCORS(Response.json({ ok: true }));
+    }
+
+    if (url.pathname === "/api/users" && request.method === "GET") {
+      const { results } = await env.DB.prepare(`SELECT id, username, role FROM users`).all();
+      return withCORS(Response.json(results));
+    }
+
+    if (url.pathname === "/api/add-user" && request.method === "POST") {
+      const { username, password, role } = await request.json();
+      await env.DB.prepare(`INSERT INTO users (username, password, role) VALUES (?, ?, ?)`).bind(username, password, role).run();
+      return withCORS(Response.json({ ok: true }));
+    }
+
+    if (url.pathname === "/api/delete-user" && request.method === "POST") {
+      const { id } = await request.json();
+      await env.DB.prepare(`DELETE FROM users WHERE id=?`).bind(id).run();
+      return withCORS(Response.json({ ok: true }));
+    }
+
+    if (url.pathname === "/api/auto-replies" && request.method === "GET") {
+      const { results } = await env.DB.prepare(`SELECT * FROM auto_replies`).all();
+      return Response.json(results);
+    }
+
+    if (url.pathname === "/api/auto-reply" && request.method === "POST") {
+      const { id, tag, hours, reply } = await request.json();
+      if (id) {
+        await env.DB.prepare(`UPDATE auto_replies SET tag=?, hours=?, reply=? WHERE id=?`).bind(tag, hours, reply, id).run();
+      } else {
+        await env.DB.prepare(`INSERT INTO auto_replies (tag, hours, reply) VALUES (?, ?, ?)`).bind(tag, hours, reply).run();
+      }
+      return Response.json({ ok: true });
+    }
+
+    if (url.pathname === "/" || url.pathname === "/index.html") {
+      if (env.ASSETS) return env.ASSETS.fetch(new Request(url.origin + '/index.html'));
+      return new Response("Static assets missing", { status: 404 });
+    }
+
     return new Response("Not found", { status: 404 });
   }
 };
