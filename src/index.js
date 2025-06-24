@@ -33,18 +33,20 @@ export default {
       const msgObj  = payload.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
       if (!msgObj) return Response.json({ ok: true });
 
-      const rawFrom = msgObj.from;       // e.g. "2761XXXXXXX"
+      const rawFrom = msgObj.from;
       const now     = Date.now();
 
-      // 4) Normalize number for Splynx
+      // 4) Normalize for Splynx lookup
       let normPhone = rawFrom.replace(/^\+|^0/, "");
       if (!normPhone.startsWith("27")) normPhone = "27" + normPhone;
 
-      // 5) Grab text if any
+      // 5) Capture text
       let userInput = "";
-      if (msgObj.type === "text") userInput = msgObj.text.body.trim();
+      if (msgObj.type === "text") {
+        userInput = msgObj.text.body.trim();
+      }
 
-      // 6) Lookup our local session
+      // 6) Lookup local session
       const sess = await env.DB.prepare(
         `SELECT email, customer_id, verified, last_seen, department
            FROM sessions WHERE phone = ?`
@@ -53,27 +55,20 @@ export default {
       const ninety = 90 * 24 * 60 * 60 * 1000;
       const expired = !sess || sess.verified === 0 || (sess.last_seen + ninety <= now);
 
-      // === AUTHENTICATION FLOW ===
+      // === AUTH FLOW ===
       if (expired) {
-        // Attempt to match "login,email" or "login email"
+        // match "login, email" or "login email"
         const m = userInput.match(/^(\S+)[\s,]+(\S+@\S+\.\S+)$/);
         if (sess && sess.verified === 0 && m) {
           const providedLogin = m[1];
           const providedEmail = m[2].toLowerCase();
+          const customer      = await getCustomerByPhone(normPhone, env);
 
-          // Fetch from Splynx using normalized phone
-          const customerRaw = await getCustomerByPhone(normPhone, env);
-
-          // Only accept if the Splynx record's phone matches exactly
-          const recordPhone = (customerRaw?.phone || "")
-            .replace(/^\+|^0/, "");
-          const phoneMatches = recordPhone === normPhone;
-
-          if (!customerRaw || !phoneMatches) {
-            // No valid Splynx customer on this number
-            const leadMsg =
+          if (!customer) {
+            // no splynx record → create lead
+            const leadMsg = 
               "We couldn’t find your number on file. " +
-              "Please send your name, address & email to create a new lead.";
+              "Please send your full name, address, and email to create a lead.";
             await sendWhatsAppMessage(rawFrom, leadMsg, env);
             await env.DB.prepare(
               `INSERT INTO messages
@@ -83,12 +78,12 @@ export default {
             return Response.json({ ok: true });
           }
 
-          // Use Splynx login & email to verify
-          const realLogin = String(customerRaw.login);
-          const realEmail = (customerRaw.email || "").toLowerCase();
+          // verify against login & email
+          const realLogin = String(customer.login);
+          const realEmail = (customer.email || "").toLowerCase();
 
           if (providedLogin === realLogin && providedEmail === realEmail) {
-            // Mark session verified
+            // mark verified
             await env.DB.prepare(
               `INSERT INTO sessions
                  (phone, email, customer_id, verified, last_seen, department)
@@ -129,7 +124,7 @@ export default {
           }
         }
 
-        // First contact or expired → prompt credentials
+        // prompt credentials
         await env.DB.prepare(
           `INSERT INTO sessions
              (phone, email, customer_id, verified, last_seen, department)
@@ -152,12 +147,12 @@ export default {
       }
 
       // === VERIFIED SESSION ===
-      // Refresh last_seen
+      // refresh last_seen
       await env.DB.prepare(
         `UPDATE sessions SET last_seen = ? WHERE phone = ?`
       ).bind(now, rawFrom).run();
 
-      // Department & ticket creation
+      // department and ticket
       if (!sess.department && userInput) {
         let dept;
         if (userInput === "1") dept = "sales";
@@ -191,37 +186,25 @@ export default {
         }
       }
 
-      // === NORMAL MESSAGE HANDLING ===
+      // normal message flow
       let media_url = null, location_json = null;
       if (msgObj.type === "image") {
-        userInput = "[Image]";
-        media_url = msgObj.image?.url || null;
+        userInput = "[Image]"; media_url = msgObj.image?.url || null;
       } else if (msgObj.type === "audio") {
-        userInput = "[Audio]";
-        media_url = msgObj.audio?.url || null;
+        userInput = "[Audio]"; media_url = msgObj.audio?.url || null;
       } else if (msgObj.type === "document") {
-        userInput = "[Document]";
-        media_url = msgObj.document?.url || null;
+        userInput = "[Document]"; media_url = msgObj.document?.url || null;
       } else if (msgObj.type === "location") {
         userInput = `[LOCATION: ${msgObj.location.latitude},${msgObj.location.longitude}]`;
         location_json = JSON.stringify(msgObj.location);
       }
 
-      // Lookup customer normally, but only treat as customer if phone matches
-      const customerRaw = await getCustomerByPhone(normPhone, env);
-      const customer = (
-        customerRaw &&
-        customerRaw.phone.replace(/^\+|^0/, "") === normPhone
-      ) ? customerRaw : null;
-
-      const reply = await routeCommand({
-        userInput,
-        customer,
-        env
-      });
+      // fetch customer but do not require phone match
+      const customer = await getCustomerByPhone(normPhone, env) || null;
+      const reply   = await routeCommand({ userInput, customer, env });
       await sendWhatsAppMessage(rawFrom, reply, env);
 
-      // Log incoming
+      // log incoming
       await env.DB.prepare(
         `INSERT INTO messages
            (from_number, body, tag, timestamp, direction, media_url, location_json)
@@ -236,13 +219,13 @@ export default {
         location_json
       ).run();
 
-      // Ensure customer row
+      // ensure customer row exists
       await env.DB.prepare(
         `INSERT OR IGNORE INTO customers (phone, name, email, verified)
          VALUES (?, '', '', 0)`
       ).bind(rawFrom).run();
 
-      // Log outgoing
+      // log outgoing
       await env.DB.prepare(
         `INSERT INTO messages
            (from_number, body, tag, timestamp, direction)
