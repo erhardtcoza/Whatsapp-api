@@ -417,6 +417,41 @@ if (url.pathname === "/api/office-hours" && request.method === "POST") {
   return withCORS(Response.json({ ok: true }));
 }
 
+
+// --- GET global office closed status and message ---
+if (url.pathname === "/api/office-global" && request.method === "GET") {
+  const { results } = await env.DB.prepare("SELECT * FROM office_global LIMIT 1").all();
+  return withCORS(Response.json(results?.[0] || { closed: 0, message: "" }));
+}
+
+// --- SET global office closed status and message ---
+if (url.pathname === "/api/office-global" && request.method === "POST") {
+  const { closed, message } = await request.json();
+  await env.DB.prepare(
+    "UPDATE office_global SET closed=?, message=? WHERE id=1"
+  ).bind(closed ? 1 : 0, message || "").run();
+  return withCORS(Response.json({ ok: true }));
+}
+
+// --- GET/ADD/REMOVE public holidays ---
+if (url.pathname === "/api/public-holidays" && request.method === "GET") {
+  const { results } = await env.DB.prepare("SELECT * FROM public_holidays ORDER BY date").all();
+  return withCORS(Response.json(results));
+}
+if (url.pathname === "/api/public-holidays" && request.method === "POST") {
+  const { date, name } = await request.json();
+  await env.DB.prepare(
+    "INSERT INTO public_holidays (date, name) VALUES (?, ?)"
+  ).bind(date, name).run();
+  return withCORS(Response.json({ ok: true }));
+}
+if (url.pathname === "/api/public-holidays/delete" && request.method === "POST") {
+  const { id } = await request.json();
+  await env.DB.prepare("DELETE FROM public_holidays WHERE id=?").bind(id).run();
+  return withCORS(Response.json({ ok: true }));
+}
+
+    
     
     // --- Serve static HTML ---
     if (url.pathname === "/" || url.pathname === "/index.html") {
