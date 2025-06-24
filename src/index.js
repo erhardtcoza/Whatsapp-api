@@ -39,6 +39,7 @@ export default {
       let userInput = "";
       let media_url = null;
       let location_json = null;
+      let rejectVoice = false;
 
       if (type === "text") {
         userInput = msgObj.text.body.trim();
@@ -46,8 +47,45 @@ export default {
         userInput = "[Image]";
         media_url = msgObj.image?.url || null;
       } else if (type === "audio") {
-        userInput = "[Audio]";
-        media_url = msgObj.audio?.url || null;
+        // Check for voice note (WhatsApp-specific)
+        if (msgObj.audio?.voice) {
+          // --- AUTO-REJECT VOICE NOTE ---
+          const autoReply = "Sorry, but we cannot receive or process voice notes. Please send text or documents.";
+          await sendWhatsAppMessage(from, autoReply, env);
+          // Log both incoming and outgoing auto-reply
+          const now = Date.now();
+          await env.DB.prepare(
+            `INSERT INTO messages (from_number, body, tag, timestamp, direction, media_url)
+             VALUES (?, ?, ?, ?, ?, ?)`
+          ).bind(
+            from,
+            "[Voice Note]",
+            "lead",
+            now,
+            "incoming",
+            msgObj.audio?.url || null
+          ).run();
+          await env.DB.prepare(
+            `INSERT INTO messages (from_number, body, tag, timestamp, direction)
+             VALUES (?, ?, ?, ?, ?)`
+          ).bind(
+            from,
+            autoReply,
+            "lead",
+            now,
+            "outgoing"
+          ).run();
+          // Ensure sender exists in customers table
+          await env.DB.prepare(
+            `INSERT OR IGNORE INTO customers (phone, name, email, verified)
+             VALUES (?, '', '', 0)`
+          ).bind(from).run();
+          // Don't process further
+          return Response.json({ ok: true });
+        } else {
+          userInput = "[Audio]";
+          media_url = msgObj.audio?.url || null;
+        }
       } else if (type === "document") {
         userInput = "[Document]";
         media_url = msgObj.document?.url || null;
@@ -56,6 +94,7 @@ export default {
         location_json = JSON.stringify(msgObj.location);
       } else {
         userInput = `[Unknown: ${type}]`;
+        if (msgObj[type]?.url) media_url = msgObj[type].url;
       }
 
       let customer = await getCustomerByPhone(from, env);
