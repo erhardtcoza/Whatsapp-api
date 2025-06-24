@@ -3,12 +3,12 @@ const AUTH_HEADER = "Basic NTcxMDRhNGJjNjhhY2Y2MjRkMDliMmYwOTQ1ZTI1M2E6N2UyOTNmY
 
 export async function getCustomerByPhone(rawPhone, env) {
   try {
-    // Normalize incoming phone to "27123456789" form
+    // 1) Normalize incoming phone to "27123456789"
     let phone = rawPhone.replace(/^\+|^0/, "");
     if (!phone.startsWith("27")) phone = "27" + phone;
 
-    // 1) Primary: search endpoint
-    const searchURL = `https://splynx.vinet.co.za/api/2.0/admin/customers/search?phone=${encodeURIComponent(phone)}`;
+    // 2) Primary: correct search endpoint (no /admin prefix)
+    const searchURL = `https://splynx.vinet.co.za/api/2.0/customers/search?phone=${encodeURIComponent(phone)}`;
     const res1 = await fetch(searchURL, {
       headers: {
         Authorization: AUTH_HEADER,
@@ -18,13 +18,12 @@ export async function getCustomerByPhone(rawPhone, env) {
     const json1 = await res1.json();
     console.log('SPYLNX SEARCH JSON:', JSON.stringify(json1, null, 2));
 
-    if (res1.ok) {
-      const list = Array.isArray(json1.data) ? json1.data : [];
-      if (list.length) return list[0];
+    if (res1.ok && Array.isArray(json1.data) && json1.data.length) {
+      return json1.data[0];
     }
 
-    // 2) Fallback: legacy customer endpoint
-    const fallbackURL = `https://splynx.vinet.co.za/api/2.0/admin/customers/customer?main_phone=${encodeURIComponent(phone)}`;
+    // 3) Fallback: legacy endpoint using main_phone
+    const fallbackURL = `https://splynx.vinet.co.za/api/2.0/customers/customer?main_phone=${encodeURIComponent(phone)}`;
     const res2 = await fetch(fallbackURL, {
       headers: {
         Authorization: AUTH_HEADER,
@@ -35,8 +34,8 @@ export async function getCustomerByPhone(rawPhone, env) {
     console.log('SPYLNX FALLBACK JSON:', JSON.stringify(json2, null, 2));
 
     if (res2.ok) {
-      if (Array.isArray(json2)) {
-        return json2.length ? json2[0] : null;
+      if (Array.isArray(json2) && json2.length) {
+        return json2[0];
       }
       if (json2 && typeof json2 === 'object') {
         return json2;
