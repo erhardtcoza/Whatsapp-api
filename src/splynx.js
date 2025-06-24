@@ -1,13 +1,16 @@
+// src/splynx.js
 const AUTH_HEADER = "Basic NTcxMDRhNGJjNjhhY2Y2MjRkMDliMmYwOTQ1ZTI1M2E6N2UyOTNmY2QyNzBjODJmOTdjNWQzODUwZjdhM2I1MTE=";
 
 export async function getCustomerByPhone(rawPhone, env) {
   try {
-    // 1) Normalize incoming to “27123456789”
+    // 1) Normalize incoming phone to "27123456789"
     let phone = rawPhone.replace(/^\+|^0/, "");
     if (!phone.startsWith("27")) phone = "27" + phone;
 
-    // 2) Hit the admin search endpoint
+    // 2) Construct search URL
     const url = `https://splynx.vinet.co.za/api/2.0/admin/customers/search?phone=${encodeURIComponent(phone)}`;
+
+    // 3) Fetch from Splynx
     const res = await fetch(url, {
       headers: {
         Authorization: AUTH_HEADER,
@@ -15,17 +18,19 @@ export async function getCustomerByPhone(rawPhone, env) {
       }
     });
 
-    if (!res.ok) return null;
+    // 4) Parse JSON
     const json = await res.json();
 
-    // 3) The API returns { data: [...] }
-    if (!Array.isArray(json.data) || !json.data.length) {
-      return null;
-    }
+    // DEBUG: log entire payload to worker logs
+    console.log('SPYLNX SEARCH JSON:', JSON.stringify(json, null, 2));
 
-    // 4) Return the first customer record
-    return json.data[0];
-  } catch {
+    // 5) Extract data array
+    const list = Array.isArray(json.data) ? json.data : [];
+
+    // 6) Return first record or null
+    return list.length ? list[0] : null;
+  } catch (err) {
+    console.error('SPYLNX SEARCH ERROR:', err);
     return null;
   }
 }
