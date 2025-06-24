@@ -46,12 +46,10 @@ export default {
         userInput = "[Image]";
         media_url = msgObj.image?.url || null;
       } else if (type === "audio") {
-        // --- Voice note rejection ---
         if (msgObj.audio?.voice) {
           const autoReply = "Sorry, but we cannot receive or process voice notes. Please send text or documents.";
           await sendWhatsAppMessage(from, autoReply, env);
           const now = Date.now();
-          // Log incoming voice note
           await env.DB.prepare(
             `INSERT INTO messages (from_number, body, tag, timestamp, direction, media_url)
              VALUES (?, ?, ?, ?, ?, ?)`
@@ -63,7 +61,6 @@ export default {
             "incoming",
             msgObj.audio?.url || null
           ).run();
-          // Log outgoing rejection message
           await env.DB.prepare(
             `INSERT INTO messages (from_number, body, tag, timestamp, direction)
              VALUES (?, ?, ?, ?, ?)`
@@ -74,12 +71,10 @@ export default {
             now,
             "outgoing"
           ).run();
-          // Ensure sender exists in customers table
           await env.DB.prepare(
             `INSERT OR IGNORE INTO customers (phone, name, email, verified)
              VALUES (?, '', '', 0)`
           ).bind(from).run();
-          // Stop further processing
           return Response.json({ ok: true });
         } else {
           userInput = "[Audio]";
@@ -102,7 +97,6 @@ export default {
       await sendWhatsAppMessage(from, reply, env);
 
       const now = Date.now();
-      // Incoming
       await env.DB.prepare(
         `INSERT INTO messages (from_number, body, tag, timestamp, direction, media_url, location_json)
          VALUES (?, ?, ?, ?, ?, ?, ?)`
@@ -116,13 +110,11 @@ export default {
         location_json
       ).run();
 
-      // --- Ensure sender exists in customers table ---
       await env.DB.prepare(
         `INSERT OR IGNORE INTO customers (phone, name, email, verified)
          VALUES (?, '', '', 0)`
       ).bind(from).run();
 
-      // Outgoing
       await env.DB.prepare(
         `INSERT INTO messages (from_number, body, tag, timestamp, direction)
          VALUES (?, ?, ?, ?, ?)`
@@ -374,34 +366,32 @@ export default {
       return withCORS(Response.json({ ok: true, message: "Customers table synced with messages." }));
     }
 
-    // --- List users ---
-if (url.pathname === "/api/users" && request.method === "GET") {
-  const { results } = await env.DB.prepare(
-    "SELECT id, username, role FROM users ORDER BY username"
-  ).all();
-  return withCORS(Response.json(results));
-}
+    // --- List admins ---
+    if (url.pathname === "/api/users" && request.method === "GET") {
+      const { results } = await env.DB.prepare(
+        "SELECT id, username, role FROM admins ORDER BY username"
+      ).all();
+      return withCORS(Response.json(results));
+    }
 
-// --- Add user ---
-if (url.pathname === "/api/add-user" && request.method === "POST") {
-  const { username, password, role } = await request.json();
-  if (!username || !password || !role) return withCORS(new Response("Missing fields", { status: 400 }));
-  // TODO: Add password hashing in production (simple for now)
-  await env.DB.prepare(
-    "INSERT INTO users (username, password, role) VALUES (?, ?, ?)"
-  ).bind(username, password, role).run();
-  return withCORS(Response.json({ ok: true }));
-}
+    // --- Add admin ---
+    if (url.pathname === "/api/add-user" && request.method === "POST") {
+      const { username, password, role } = await request.json();
+      if (!username || !password || !role) return withCORS(new Response("Missing fields", { status: 400 }));
+      await env.DB.prepare(
+        "INSERT INTO admins (username, password, role) VALUES (?, ?, ?)"
+      ).bind(username, password, role).run();
+      return withCORS(Response.json({ ok: true }));
+    }
 
-// --- Delete user ---
-if (url.pathname === "/api/delete-user" && request.method === "POST") {
-  const { id } = await request.json();
-  if (!id) return withCORS(new Response("Missing user id", { status: 400 }));
-  await env.DB.prepare("DELETE FROM users WHERE id=?").bind(id).run();
-  return withCORS(Response.json({ ok: true }));
-}
+    // --- Delete admin ---
+    if (url.pathname === "/api/delete-user" && request.method === "POST") {
+      const { id } = await request.json();
+      if (!id) return withCORS(new Response("Missing user id", { status: 400 }));
+      await env.DB.prepare("DELETE FROM admins WHERE id=?").bind(id).run();
+      return withCORS(Response.json({ ok: true }));
+    }
 
-    
     // --- Serve static HTML ---
     if (url.pathname === "/" || url.pathname === "/index.html") {
       if (env.ASSETS) {
