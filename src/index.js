@@ -2,7 +2,6 @@ import { getCustomerByPhone } from './splynx.js';
 import { sendWhatsAppMessage } from './whatsapp.js';
 import { routeCommand } from './commands.js';
 
-// --- CORS helper ---
 function withCORS(resp) {
   resp.headers.set("Access-Control-Allow-Origin", "*");
   resp.headers.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
@@ -14,37 +13,38 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
-    // --- CORS preflight ---
+    // CORS preflight
     if (request.method === "OPTIONS" && url.pathname.startsWith("/api/")) {
       return withCORS(new Response("OK", { status: 200 }));
     }
 
-    // --- WhatsApp webhook verification (GET) ---
+    // Webhook verification
     if (url.pathname === "/webhook" && request.method === "GET") {
-      const token = url.searchParams.get("hub.verify_token");
+      const token     = url.searchParams.get("hub.verify_token");
       const challenge = url.searchParams.get("hub.challenge");
       if (token === env.VERIFY_TOKEN) return new Response(challenge, { status: 200 });
       return new Response("Forbidden", { status: 403 });
     }
 
-    // --- WhatsApp webhook handler (POST) ---
+    // Webhook handler
     if (url.pathname === "/webhook" && request.method === "POST") {
       const payload = await request.json();
-      const msgObj = payload.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
+      const msgObj  = payload.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
       if (!msgObj) return Response.json({ ok: true });
 
-      const rawFrom = msgObj.from;        // original WhatsApp number
-      const now     = Date.now();
+      const rawFrom  = msgObj.from;
+      const now      = Date.now();
+      let   userInput = "";
 
-      // 1️⃣ Normalize phone for Splynx lookups (strip + or 0, ensure '27' prefix)
+      if (msgObj.type === "text") {
+        userInput = msgObj.text.body.trim();
+      }
+
+      // 1) Normalize for Splynx
       let normPhone = rawFrom.replace(/^\+|^0/, "");
       if (!normPhone.startsWith("27")) normPhone = "27" + normPhone;
 
-      // 2️⃣ Capture text input if available
-      let userInput = "";
-      if (msgObj.type === "text") userInput = msgObj.text.body.trim();
-
-      // 3️⃣ Lookup our local session by raw WhatsApp number
+      // 2) Lookup session
       const sess = await env.DB.prepare(
         `SELECT email, customer_id, verified, last_seen, department
            FROM sessions WHERE phone = ?`
@@ -53,37 +53,37 @@ export default {
       const ninetyDays = 90 * 24 * 60 * 60 * 1000;
       const expired    = !sess || sess.verified === 0 || (sess.last_seen + ninetyDays <= now);
 
-      // 4️⃣ Unverified or expired → authentication flow
+      // 3) Authentication flow
       if (expired) {
-        // a) If they’ve been prompted and reply “ID email”
         const match = userInput.match(/^(\S+)\s+(\S+@\S+\.\S+)$/);
         if (sess && sess.verified === 0 && match) {
           const providedId    = match[1];
           const providedEmail = match[2].toLowerCase();
-
-          // **Use normalized phone** to call Splynx
-          const customer = await getCustomerByPhone(normPhone, env);
+          const customer      = await getCustomerByPhone(normPhone, env);
 
           if (!customer) {
-            // Not in Splynx → treat as lead
-            const leadMsg =
-              "We couldn’t find your number in our system. " +
-              "Please send your full name, address, and email to create a lead.";
+            const leadMsg = "We couldn’t find your number in our system. Please send your full name, address and email to create a lead.";
             await sendWhatsAppMessage(rawFrom, leadMsg, env);
             await env.DB.prepare(
-              `INSERT INTO messages
-                 (from_number, body, tag, timestamp, direction)
+              `INSERT INTO messages (from_number, body, tag, timestamp, direction)
                VALUES (?, ?, 'lead', ?, 'outgoing')`
             ).bind(rawFrom, leadMsg, now).run();
             return Response.json({ ok: true });
           }
 
-          // **Key fix**: try multiple field names for ID
-          const realId    = customer.customer_id ?? customer.id ?? "";
+          // send debug payload
+          await sendWhatsAppMessage(
+            rawFrom,
+            `🛠 DEBUG (Splynx payload):\n\`\`\`${JSON.stringify(customer, null,2)}\`\`\``,
+            env
+          );
+
+          // try matching common fields
+          const realId    = customer.customer_id ?? customer.id ?? customer.customerid ?? "";
           const realEmail = (customer.email || "").toLowerCase();
 
           if (providedId === realId && providedEmail === realEmail) {
-            // ✅ Verified - update session
+            // mark verified
             await env.DB.prepare(
               `INSERT INTO sessions
                  (phone, email, customer_id, verified, last_seen, department)
@@ -102,29 +102,23 @@ export default {
               "3. Support";
             await sendWhatsAppMessage(rawFrom, menu, env);
             await env.DB.prepare(
-              `INSERT INTO messages
-                 (from_number, body, tag, timestamp, direction)
+              `INSERT INTO messages (from_number, body, tag, timestamp, direction)
                VALUES (?, ?, 'system', ?, 'outgoing')`
             ).bind(rawFrom, menu, now).run();
             return Response.json({ ok: true });
           } else {
-            // ❌ Mismatch - include actual values for clarity
-            const hint = `Our records: ID ${realId || "<none>"}, email ${realEmail}.`;
             const retry =
-              "❌ Didn’t match.\n" +
-              `${hint}\n` +
-              "Please reply exactly with your Customer ID and email.";
+              "❌ Didn’t match. Check the debug above and reply exactly with your Customer ID and email.";
             await sendWhatsAppMessage(rawFrom, retry, env);
             await env.DB.prepare(
-              `INSERT INTO messages
-                 (from_number, body, tag, timestamp, direction)
+              `INSERT INTO messages (from_number, body, tag, timestamp, direction)
                VALUES (?, ?, 'system', ?, 'outgoing')`
             ).bind(rawFrom, retry, now).run();
             return Response.json({ ok: true });
           }
         }
 
-        // b) New or expired session → prompt for credentials
+        // prompt credentials
         await env.DB.prepare(
           `INSERT INTO sessions
              (phone, email, customer_id, verified, last_seen, department)
@@ -139,19 +133,18 @@ export default {
           "(e.g. 12345 you@example.com).";
         await sendWhatsAppMessage(rawFrom, prompt, env);
         await env.DB.prepare(
-          `INSERT INTO messages
-             (from_number, body, tag, timestamp, direction)
+          `INSERT INTO messages (from_number, body, tag, timestamp, direction)
            VALUES (?, ?, 'system', ?, 'outgoing')`
         ).bind(rawFrom, prompt, now).run();
         return Response.json({ ok: true });
       }
 
-      // 5️⃣ Verified session → refresh last_seen
+      // 4) Verified → refresh
       await env.DB.prepare(
         `UPDATE sessions SET last_seen = ? WHERE phone = ?`
       ).bind(now, rawFrom).run();
 
-      // 6️⃣ Department & ticket creation
+      // 5) Department & ticket logic
       if (!sess.department && userInput) {
         let dept;
         if (userInput === "1") dept = "sales";
@@ -163,12 +156,11 @@ export default {
             `UPDATE sessions SET department = ?, last_seen = ? WHERE phone = ?`
           ).bind(dept, now, rawFrom).run();
 
-          const date   = now.toString().slice(0,10).replace(/-/g,"");
+          const date   = new Date().toISOString().slice(0,10).replace(/-/g,"");
           const ticket = `TKT-${date}-${Math.floor(Math.random()*9000+1000)}`;
 
           await env.DB.prepare(
-            `INSERT INTO chatsessions
-               (phone, ticket, department, start_ts)
+            `INSERT INTO chatsessions (phone, ticket, department, start_ts)
              VALUES (?, ?, ?, ?)`
           ).bind(rawFrom, ticket, dept, now).run();
 
@@ -177,59 +169,41 @@ export default {
             `How can we help?`;
           await sendWhatsAppMessage(rawFrom, ack, env);
           await env.DB.prepare(
-            `INSERT INTO messages
-               (from_number, body, tag, timestamp, direction)
+            `INSERT INTO messages (from_number, body, tag, timestamp, direction)
              VALUES (?, ?, 'ticket', ?, 'outgoing')`
           ).bind(rawFrom, ack, now).run();
           return Response.json({ ok: true });
         }
       }
 
-      // 7️⃣ Normal message handling
-      let media_url = null;
-      let location_json = null;
+      // 6) Normal handling
+      let media_url = null, location_json = null;
       if (msgObj.type === "image") {
-        userInput = "[Image]";
-        media_url = msgObj.image?.url || null;
+        userInput = "[Image]"; media_url = msgObj.image?.url || null;
       } else if (msgObj.type === "audio") {
-        userInput = "[Audio]";
-        media_url = msgObj.audio?.url || null;
+        userInput = "[Audio]"; media_url = msgObj.audio?.url || null;
       } else if (msgObj.type === "document") {
-        userInput = "[Document]";
-        media_url = msgObj.document?.url || null;
+        userInput = "[Document]"; media_url = msgObj.document?.url || null;
       } else if (msgObj.type === "location") {
         userInput = `[LOCATION: ${msgObj.location.latitude},${msgObj.location.longitude}]`;
         location_json = JSON.stringify(msgObj.location);
       }
 
-      // Lookup customer with normalized phone
       const customer = await getCustomerByPhone(normPhone, env);
       const reply   = await routeCommand({ userInput, customer, env });
       await sendWhatsAppMessage(rawFrom, reply, env);
 
-      // Persist incoming
       await env.DB.prepare(
         `INSERT INTO messages
            (from_number, body, tag, timestamp, direction, media_url, location_json)
          VALUES (?, ?, ?, ?, ?, ?, ?)`
-      ).bind(
-        rawFrom,
-        userInput,
-        customer ? "customer" : "lead",
-        now,
-        "incoming",
-        media_url,
-        location_json
-      ).run();
+      ).bind(rawFrom, userInput, customer ? "customer" : "lead", now, "incoming", media_url, location_json).run();
 
-      // Ensure customer record
       await env.DB.prepare(
-        `INSERT OR IGNORE INTO customers
-           (phone, name, email, verified)
+        `INSERT OR IGNORE INTO customers (phone, name, email, verified)
          VALUES (?, '', '', 0)`
       ).bind(rawFrom).run();
 
-      // Persist outgoing
       await env.DB.prepare(
         `INSERT INTO messages
            (from_number, body, tag, timestamp, direction)
@@ -239,10 +213,8 @@ export default {
       return Response.json({ ok: true });
     }
 
-    // --- API endpoints below unchanged ---
-    // ...
+    // ... your existing API endpoints unchanged ...
 
-    // --- Fallback ---
     return new Response("Not found", { status: 404 });
   }
 };
