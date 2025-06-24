@@ -374,6 +374,34 @@ export default {
       return withCORS(Response.json({ ok: true, message: "Customers table synced with messages." }));
     }
 
+    // --- List users ---
+if (url.pathname === "/api/users" && request.method === "GET") {
+  const { results } = await env.DB.prepare(
+    "SELECT id, username, role FROM users ORDER BY username"
+  ).all();
+  return withCORS(Response.json(results));
+}
+
+// --- Add user ---
+if (url.pathname === "/api/add-user" && request.method === "POST") {
+  const { username, password, role } = await request.json();
+  if (!username || !password || !role) return withCORS(new Response("Missing fields", { status: 400 }));
+  // TODO: Add password hashing in production (simple for now)
+  await env.DB.prepare(
+    "INSERT INTO users (username, password, role) VALUES (?, ?, ?)"
+  ).bind(username, password, role).run();
+  return withCORS(Response.json({ ok: true }));
+}
+
+// --- Delete user ---
+if (url.pathname === "/api/delete-user" && request.method === "POST") {
+  const { id } = await request.json();
+  if (!id) return withCORS(new Response("Missing user id", { status: 400 }));
+  await env.DB.prepare("DELETE FROM users WHERE id=?").bind(id).run();
+  return withCORS(Response.json({ ok: true }));
+}
+
+    
     // --- Serve static HTML ---
     if (url.pathname === "/" || url.pathname === "/index.html") {
       if (env.ASSETS) {
