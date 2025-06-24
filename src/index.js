@@ -2,6 +2,7 @@ import { getCustomerByPhone } from './splynx.js';
 import { sendWhatsAppMessage } from './whatsapp.js';
 import { routeCommand } from './commands.js';
 
+// --- CORS helper ---
 function withCORS(resp) {
   resp.headers.set("Access-Control-Allow-Origin", "*");
   resp.headers.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
@@ -13,12 +14,12 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
-    // CORS preflight
+    // --- CORS preflight ---
     if (request.method === "OPTIONS" && url.pathname.startsWith("/api/")) {
       return withCORS(new Response("OK", { status: 200 }));
     }
 
-    // Webhook verification
+    // --- WhatsApp webhook verification (GET) ---
     if (url.pathname === "/webhook" && request.method === "GET") {
       const token     = url.searchParams.get("hub.verify_token");
       const challenge = url.searchParams.get("hub.challenge");
@@ -26,25 +27,26 @@ export default {
       return new Response("Forbidden", { status: 403 });
     }
 
-    // Webhook handler
+    // --- WhatsApp webhook handler (POST) ---
     if (url.pathname === "/webhook" && request.method === "POST") {
       const payload = await request.json();
       const msgObj  = payload.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
       if (!msgObj) return Response.json({ ok: true });
 
-      const rawFrom  = msgObj.from;
+      const rawFrom  = msgObj.from; // e.g. "2761xxxxxxx"
       const now      = Date.now();
-      let   userInput = "";
 
+      // 1️⃣ Normalize phone for Splynx
+      let normPhone = rawFrom.replace(/^\+|^0/, "");
+      if (!normPhone.startsWith("27")) normPhone = "27" + normPhone;
+
+      // 2️⃣ Capture text input
+      let userInput = "";
       if (msgObj.type === "text") {
         userInput = msgObj.text.body.trim();
       }
 
-      // 1) Normalize for Splynx
-      let normPhone = rawFrom.replace(/^\+|^0/, "");
-      if (!normPhone.startsWith("27")) normPhone = "27" + normPhone;
-
-      // 2) Lookup session
+      // 3️⃣ Lookup session by raw WhatsApp number
       const sess = await env.DB.prepare(
         `SELECT email, customer_id, verified, last_seen, department
            FROM sessions WHERE phone = ?`
@@ -53,7 +55,7 @@ export default {
       const ninetyDays = 90 * 24 * 60 * 60 * 1000;
       const expired    = !sess || sess.verified === 0 || (sess.last_seen + ninetyDays <= now);
 
-      // 3) Authentication flow
+      // 4️⃣ Authentication flow if expired or unverified
       if (expired) {
         const match = userInput.match(/^(\S+)\s+(\S+@\S+\.\S+)$/);
         if (sess && sess.verified === 0 && match) {
@@ -62,7 +64,9 @@ export default {
           const customer      = await getCustomerByPhone(normPhone, env);
 
           if (!customer) {
-            const leadMsg = "We couldn’t find your number in our system. Please send your full name, address and email to create a lead.";
+            const leadMsg =
+              "We couldn’t find your number in our system. " +
+              "Please send your full name, address, and email to create a lead.";
             await sendWhatsAppMessage(rawFrom, leadMsg, env);
             await env.DB.prepare(
               `INSERT INTO messages (from_number, body, tag, timestamp, direction)
@@ -71,19 +75,12 @@ export default {
             return Response.json({ ok: true });
           }
 
-          // send debug payload
-          await sendWhatsAppMessage(
-            rawFrom,
-            `🛠 DEBUG (Splynx payload):\n\`\`\`${JSON.stringify(customer, null,2)}\`\`\``,
-            env
-          );
-
-          // try matching common fields
-          const realId    = customer.customer_id ?? customer.id ?? customer.customerid ?? "";
+          // Key: field is called "ID"
+          const realId    = customer.ID ?? "";
           const realEmail = (customer.email || "").toLowerCase();
 
           if (providedId === realId && providedEmail === realEmail) {
-            // mark verified
+            // Verified
             await env.DB.prepare(
               `INSERT INTO sessions
                  (phone, email, customer_id, verified, last_seen, department)
@@ -107,8 +104,11 @@ export default {
             ).bind(rawFrom, menu, now).run();
             return Response.json({ ok: true });
           } else {
+            const hint = `Our records: ID ${realId}, email ${realEmail}.`;
             const retry =
-              "❌ Didn’t match. Check the debug above and reply exactly with your Customer ID and email.";
+              "❌ Didn’t match.\n" +
+              `${hint}\n` +
+              "Please reply exactly with your Customer ID and email.";
             await sendWhatsAppMessage(rawFrom, retry, env);
             await env.DB.prepare(
               `INSERT INTO messages (from_number, body, tag, timestamp, direction)
@@ -118,7 +118,7 @@ export default {
           }
         }
 
-        // prompt credentials
+        // Prompt credentials
         await env.DB.prepare(
           `INSERT INTO sessions
              (phone, email, customer_id, verified, last_seen, department)
@@ -139,12 +139,12 @@ export default {
         return Response.json({ ok: true });
       }
 
-      // 4) Verified → refresh
+      // 5️⃣ Verified session: refresh last_seen
       await env.DB.prepare(
         `UPDATE sessions SET last_seen = ? WHERE phone = ?`
       ).bind(now, rawFrom).run();
 
-      // 5) Department & ticket logic
+      // 6️⃣ Department & ticket creation
       if (!sess.department && userInput) {
         let dept;
         if (userInput === "1") dept = "sales";
@@ -176,14 +176,17 @@ export default {
         }
       }
 
-      // 6) Normal handling
+      // 7️⃣ Normal message handling
       let media_url = null, location_json = null;
       if (msgObj.type === "image") {
-        userInput = "[Image]"; media_url = msgObj.image?.url || null;
+        userInput = "[Image]";
+        media_url = msgObj.image?.url || null;
       } else if (msgObj.type === "audio") {
-        userInput = "[Audio]"; media_url = msgObj.audio?.url || null;
+        userInput = "[Audio]";
+        media_url = msgObj.audio?.url || null;
       } else if (msgObj.type === "document") {
-        userInput = "[Document]"; media_url = msgObj.document?.url || null;
+        userInput = "[Document]";
+        media_url = msgObj.document?.url || null;
       } else if (msgObj.type === "location") {
         userInput = `[LOCATION: ${msgObj.location.latitude},${msgObj.location.longitude}]`;
         location_json = JSON.stringify(msgObj.location);
@@ -213,7 +216,8 @@ export default {
       return Response.json({ ok: true });
     }
 
-    // ... your existing API endpoints unchanged ...
+    // --- API endpoints unchanged below ---
+    // ...
 
     return new Response("Not found", { status: 404 });
   }
