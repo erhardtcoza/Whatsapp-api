@@ -7,6 +7,10 @@ binding = "DB"
 database_name = "vinet-whatsapp-db"
 database_id = "2e1228d6-b6f6-494e-b4de-9cdd508854a0"
 
+[[r2_buckets]]
+binding = "vinet_whatsapp_images"
+bucket_name = "vinet-whatsapp-images"
+
 [vars]
 PHONE_NUMBER_ID = "104043025887306"
 WHATSAPP_TOKEN = "EAALpZCXUFpXsBO9tCyAuJUdO9MObRocFxZAZCJlxheOZBNp8CTvDn1Was9K48VkK3G3QZADZCYKur24nnXe9FNmwaCuttnzgOezJQi9tZApBZCVaq9ZCsID3FxlvJb6E1p7uLZADEtNoRRpiLGL3UCCY0ZBVp4YxxZC7TL3iIGvaqDH6hwQbZAIToVJeVceeAQjEkyxQZD"
