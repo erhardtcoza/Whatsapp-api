@@ -13,7 +13,7 @@ bucket_name = "vinet-whatsapp-images"
 
 [[kv_namespaces]]
 binding = "KV_BINDING"
-bucket_name = "f67b068e3dc8441a97c8c68212cb6d61"
+id = "f67b068e3dc8441a97c8c68212cb6d61"
 
 [vars]
 PHONE_NUMBER_ID = "104043025887306"
