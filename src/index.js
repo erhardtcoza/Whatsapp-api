@@ -127,7 +127,7 @@ export default {
           return Response.json({ ok: true });
         }
 
-        // otherwise fall through to normal routing below
+        // otherwise fall through to the “normal” unverified greeting below
       }
 
       // --- NEW / UNVERIFIED FLOW ---
@@ -291,7 +291,9 @@ export default {
       const sql = `
         SELECT m.from_number, c.name, c.email, c.customer_id,
                MAX(m.timestamp) as last_ts,
-               (SELECT body FROM messages m2 WHERE m2.from_number=m.from_number ORDER BY m2.timestamp DESC LIMIT 1) as last_message
+               (SELECT body FROM messages m2
+                  WHERE m2.from_number=m.from_number
+                  ORDER BY m2.timestamp DESC LIMIT 1) as last_message
         FROM messages m
         LEFT JOIN customers c ON c.phone=m.from_number
         WHERE m.tag='support' AND (m.closed IS NULL OR m.closed=0)
@@ -300,11 +302,14 @@ export default {
       const { results } = await env.DB.prepare(sql).all();
       return withCORS(Response.json(results));
     }
+
     if (url.pathname === "/api/accounts-chats" && request.method === "GET") {
       const sql = `
         SELECT m.from_number, c.name, c.email, c.customer_id,
                MAX(m.timestamp) as last_ts,
-               (SELECT body FROM messages m2 WHERE m2.from_number=m.from_number ORDER BY m2.timestamp DESC LIMIT 1) as last_message
+               (SELECT body FROM messages m2
+                  WHERE m2.from_number=m.from_number
+                  ORDER BY m2.timestamp DESC LIMIT 1) as last_message
         FROM messages m
         LEFT JOIN customers c ON c.phone=m.from_number
         WHERE m.tag='accounts' AND (m.closed IS NULL OR m.closed=0)
@@ -313,14 +318,34 @@ export default {
       const { results } = await env.DB.prepare(sql).all();
       return withCORS(Response.json(results));
     }
+
     if (url.pathname === "/api/sales-chats" && request.method === "GET") {
       const sql = `
         SELECT m.from_number, c.name, c.email, c.customer_id,
                MAX(m.timestamp) as last_ts,
-               (SELECT body FROM messages m2 WHERE m2.from_number=m.from_number ORDER BY m2.timestamp DESC LIMIT 1) as last_message
+               (SELECT body FROM messages m2
+                  WHERE m2.from_number=m.from_number
+                  ORDER BY m2.timestamp DESC LIMIT 1) as last_message
         FROM messages m
         LEFT JOIN customers c ON c.phone=m.from_number
         WHERE m.tag='sales' AND (m.closed IS NULL OR m.closed=0)
+        GROUP BY m.from_number ORDER BY last_ts DESC LIMIT 200
+      `;
+      const { results } = await env.DB.prepare(sql).all();
+      return withCORS(Response.json(results));
+    }
+
+    // ← New “leads-chats” endpoint
+    if (url.pathname === "/api/leads-chats" && request.method === "GET") {
+      const sql = `
+        SELECT m.from_number, c.name, c.email, c.customer_id,
+               MAX(m.timestamp) as last_ts,
+               (SELECT body FROM messages m2
+                  WHERE m2.from_number=m.from_number
+                  ORDER BY m2.timestamp DESC LIMIT 1) as last_message
+        FROM messages m
+        LEFT JOIN customers c ON c.phone=m.from_number
+        WHERE m.tag='leads' AND (m.closed IS NULL OR m.closed=0)
         GROUP BY m.from_number ORDER BY last_ts DESC LIMIT 200
       `;
       const { results } = await env.DB.prepare(sql).all();
@@ -403,7 +428,6 @@ export default {
       `).bind(tag,day,open_time,close_time,closed?1:0).run();
       return withCORS(Response.json({ ok:true }));
     }
-
     if (url.pathname === "/api/office-global" && request.method === "GET") {
       const { results } = await env.DB.prepare(`SELECT * FROM office_global LIMIT 1`).all();
       return withCORS(Response.json(results[0]||{ closed:0,message:"" }));
