@@ -39,8 +39,8 @@ export default {
 
       const from = msgObj.from;
       const now  = Date.now();
-      let   userInput  = "";
-      let   media_url  = null;
+      let   userInput     = "";
+      let   media_url     = null;
       let   location_json = null;
 
       // --- parse incoming message ---
@@ -48,13 +48,12 @@ export default {
       if (type === "text") {
         userInput = msgObj.text.body.trim();
       } else if (type === "image") {
-        userInput  = "[Image]";
-        media_url  = msgObj.image?.url || null;
+        userInput = "[Image]";
+        media_url = msgObj.image?.url || null;
       } else if (type === "audio") {
         if (msgObj.audio?.voice) {
           const autoReply = "Sorry, but we cannot receive voice notes. Please send text or documents.";
           await sendWhatsAppMessage(from, autoReply, env);
-          // log incoming voice note + outgoing autoReply
           await env.DB.prepare(
             `INSERT INTO messages (from_number, body, tag, timestamp, direction, media_url)
              VALUES (?, ?, 'lead', ?, 'incoming', ?)`
@@ -63,7 +62,6 @@ export default {
             `INSERT INTO messages (from_number, body, tag, timestamp, direction)
              VALUES (?, ?, 'lead', ?, 'outgoing')`
           ).bind(from, autoReply, now).run();
-          // ensure customer record exists
           await env.DB.prepare(
             `INSERT OR IGNORE INTO customers (phone, name, email, verified)
              VALUES (?, '', '', 0)`
@@ -77,15 +75,14 @@ export default {
         userInput = "[Document]";
         media_url = msgObj.document?.url || null;
       } else if (type === "location") {
-        userInput      = `[LOCATION: ${msgObj.location.latitude},${msgObj.location.longitude}]`;
-        location_json  = JSON.stringify(msgObj.location);
+        userInput     = `[LOCATION: ${msgObj.location.latitude},${msgObj.location.longitude}]`;
+        location_json = JSON.stringify(msgObj.location);
       } else {
         userInput = `[Unknown: ${type}]`;
         if (msgObj[type]?.url) media_url = msgObj[type].url;
       }
 
-      // --- lookup your own customers table (not Splynx) ---
-      // let customer = await getCustomerByPhone(from, env);  // commented out
+      // --- lookup in your own customers table (not Splynx) ---
       const customer = await env.DB
         .prepare(`SELECT * FROM customers WHERE phone = ?`)
         .bind(from)
@@ -97,7 +94,6 @@ export default {
 
       // --- VERIFIED CUSTOMER FLOW ---
       if (customer && customer.verified === 1) {
-        // 1) they said “hi”
         if (greetingKeywords.includes(lc)) {
           const firstName = (customer.name || "").split(" ")[0] || "";
           const reply =
@@ -111,14 +107,13 @@ export default {
           return Response.json({ ok: true });
         }
 
-        // 2) they chose department
-        let tag: string | null = null;
+        // department choice
+        let tag = null;
         if (userInput === "1") tag = "support";
         else if (userInput === "2") tag = "sales";
         else if (userInput === "3") tag = "accounts";
 
         if (tag) {
-          // update tag on all their messages for dashboard filtering
           await env.DB.prepare(
             `UPDATE messages SET tag = ? WHERE from_number = ?`
           ).bind(tag, from).run();
@@ -132,19 +127,16 @@ export default {
           return Response.json({ ok: true });
         }
 
-        // otherwise, fall through to normal “routeCommand” behavior below
+        // otherwise fall through to normal routing below
       }
 
       // --- NEW / UNVERIFIED FLOW ---
-      // If we get here, customer is missing or not verified
-      // Ask if they’re existing or new:
       const prompt =
         "Welcome! Are you an existing Vinet client? If yes, reply with:\n" +
         "`First Last, you@example.com, YourCustomerID`\n" +
         "If not, reply with `new` and we’ll treat you as a lead.";
       await sendWhatsAppMessage(from, prompt, env);
 
-      // ensure record exists
       await env.DB.prepare(
         `INSERT OR IGNORE INTO customers (phone, name, email, verified)
          VALUES (?, '', '', 0)`
@@ -158,7 +150,7 @@ export default {
       return Response.json({ ok: true });
     }
 
-    // --- List chats for dashboard (OPEN only) ---
+    // --- List open chats ---
     if (url.pathname === "/api/chats" && request.method === "GET") {
       const sql = `
         SELECT
@@ -185,7 +177,7 @@ export default {
       return withCORS(Response.json(results));
     }
 
-    // --- List chats for dashboard (CLOSED only) ---
+    // --- List closed chats ---
     if (url.pathname === "/api/closed-chats" && request.method === "GET") {
       const sql = `
         SELECT
@@ -206,7 +198,7 @@ export default {
       return withCORS(Response.json(results));
     }
 
-    // --- List messages for a chat ---
+    // --- List messages within a chat ---
     if (url.pathname === "/api/messages" && request.method === "GET") {
       const phone = url.searchParams.get("phone");
       if (!phone) return withCORS(new Response("Missing phone", { status: 400 }));
@@ -221,7 +213,7 @@ export default {
       return withCORS(Response.json(results));
     }
 
-    // --- Close chat ---
+    // --- Close a chat ---
     if (url.pathname === "/api/close-chat" && request.method === "POST") {
       const { phone } = await request.json();
       if (!phone) return withCORS(new Response("Missing phone", { status: 400 }));
@@ -230,7 +222,7 @@ export default {
       return withCORS(Response.json({ ok: true }));
     }
 
-    // --- Send admin reply ---
+    // --- Admin sends a reply ---
     if (url.pathname === "/api/send-message" && request.method === "POST") {
       const { phone, body } = await request.json();
       if (!phone || !body) return withCORS(new Response("Missing fields", { status: 400 }));
@@ -243,7 +235,7 @@ export default {
       return withCORS(Response.json({ ok: true }));
     }
 
-    // --- Set tag ---
+    // --- Set a message/chat tag manually ---
     if (url.pathname === "/api/set-tag" && request.method === "POST") {
       const { from_number, tag } = await request.json();
       if (!from_number || !tag) return withCORS(new Response("Missing fields", { status: 400 }));
@@ -252,7 +244,7 @@ export default {
       return withCORS(Response.json({ ok: true }));
     }
 
-    // --- Update customer details ---
+    // --- Update customer record & mark verified ---
     if (url.pathname === "/api/update-customer" && request.method === "POST") {
       const { phone, name, customer_id, email } = await request.json();
       if (!phone) return withCORS(new Response("Missing phone", { status: 400 }));
@@ -357,7 +349,7 @@ export default {
       }
     }
 
-    // --- Sync customers table from messages (maintenance) ---
+    // --- Sync customers table from messages ---
     if (url.pathname === "/api/customers-sync" && request.method === "POST") {
       const syncSql = `
         INSERT OR IGNORE INTO customers (phone, name, email, verified)
@@ -386,7 +378,7 @@ export default {
     }
     if (url.pathname === "/api/delete-user" && request.method === "POST") {
       const { id } = await request.json();
-      if (!id) return withCORS(new Response("Missing user id",{status:400}));
+      if (!id) return withCORS(new Response("Missing user id", { status:400 }));
       await env.DB.prepare(`DELETE FROM admins WHERE id=?`).bind(id).run();
       return withCORS(Response.json({ ok:true }));
     }
@@ -399,7 +391,7 @@ export default {
     if (url.pathname === "/api/office-hours" && request.method === "POST") {
       const { tag, day, open_time, close_time, closed } = await request.json();
       if (typeof tag!=="string"||typeof day!=="number") {
-        return withCORS(new Response("Missing fields",{status:400}));
+        return withCORS(new Response("Missing fields", { status:400 }));
       }
       await env.DB.prepare(`
         INSERT INTO office_hours (tag,day,open_time,close_time,closed)
@@ -411,6 +403,7 @@ export default {
       `).bind(tag,day,open_time,close_time,closed?1:0).run();
       return withCORS(Response.json({ ok:true }));
     }
+
     if (url.pathname === "/api/office-global" && request.method === "GET") {
       const { results } = await env.DB.prepare(`SELECT * FROM office_global LIMIT 1`).all();
       return withCORS(Response.json(results[0]||{ closed:0,message:"" }));
@@ -423,7 +416,7 @@ export default {
       return withCORS(Response.json({ ok:true }));
     }
 
-    // --- Public holidays ---
+    // --- Public holidays endpoints ---
     if (url.pathname === "/api/public-holidays" && request.method === "GET") {
       const { results } = await env.DB.prepare(`SELECT * FROM public_holidays ORDER BY date`).all();
       return withCORS(Response.json(results));
@@ -441,7 +434,7 @@ export default {
       return withCORS(Response.json({ ok:true }));
     }
 
-    // --- Serve static assets ---
+    // --- Serve static HTML ---
     if (url.pathname === "/" || url.pathname === "/index.html") {
       if (env.ASSETS) {
         return env.ASSETS.fetch(new Request(url.origin + "/index.html"));
