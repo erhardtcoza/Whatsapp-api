@@ -150,6 +150,76 @@ export default {
       return Response.json({ ok: true });
     }
 
+// --- List all flows ---
+if (url.pathname === "/api/flows" && request.method === "GET") {
+  const { results } = await env.DB.prepare(`
+    SELECT id, name
+      FROM flows
+      ORDER BY id
+  `).all();
+  return withCORS(Response.json(results));
+}
+
+// --- Create a new flow ---
+if (url.pathname === "/api/flow" && request.method === "POST") {
+  const { name } = await request.json();
+  if (!name) return withCORS(new Response("Missing name", { status: 400 }));
+  await env.DB.prepare(`
+    INSERT INTO flows (name)
+      VALUES (?)
+  `).bind(name).run();
+  return withCORS(Response.json({ ok: true }));
+}
+
+// --- Delete a flow ---
+if (url.pathname.match(/^\/api\/flow\/\d+$/) && request.method === "DELETE") {
+  const flowId = url.pathname.split("/").pop();
+  await env.DB.prepare(`DELETE FROM flows WHERE id = ?`)
+    .bind(flowId).run();
+  // also remove its steps:
+  await env.DB.prepare(`DELETE FROM flow_steps WHERE flow_id = ?`)
+    .bind(flowId).run();
+  return withCORS(Response.json({ ok: true }));
+}
+
+// --- List steps for one flow ---
+if (url.pathname.match(/^\/api\/flows\/\d+\/steps$/) && request.method === "GET") {
+  const flowId = url.pathname.split("/")[2];
+  const { results } = await env.DB.prepare(`
+    SELECT id, flow_id, condition, response
+      FROM flow_steps
+     WHERE flow_id = ?
+     ORDER BY id
+  `).bind(flowId).all();
+  return withCORS(Response.json(results));
+}
+
+// --- Upsert all steps for one flow ---
+if (url.pathname.match(/^\/api\/flows\/\d+\/steps$/) && request.method === "POST") {
+  const flowId = url.pathname.split("/")[2];
+  const steps = await request.json();  // expect array of { id?, flow_id, condition, response }
+  // Simple approach: delete existing and re-insert
+  await env.DB.prepare(`DELETE FROM flow_steps WHERE flow_id = ?`)
+    .bind(flowId).run();
+  const insert = env.DB.prepare(`
+    INSERT INTO flow_steps (flow_id, condition, response)
+      VALUES (?, ?, ?)
+  `);
+  for (let s of steps) {
+    await insert.bind(flowId, s.condition, s.response).run();
+  }
+  return withCORS(Response.json({ ok: true }));
+}
+
+// --- Delete a single step ---
+if (url.pathname.match(/^\/api\/step\/\d+$/) && request.method === "DELETE") {
+  const stepId = url.pathname.split("/").pop();
+  await env.DB.prepare(`DELETE FROM flow_steps WHERE id = ?`)
+    .bind(stepId).run();
+  return withCORS(Response.json({ ok: true }));
+}
+
+    
     // --- List open chats ---
     if (url.pathname === "/api/chats" && request.method === "GET") {
       const sql = `
