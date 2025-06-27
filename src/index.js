@@ -222,6 +222,15 @@ export default {
       return withCORS(Response.json({ ok: true }));
     }
 
+// --- GET all customers for Send Message page ---
+if (url.pathname === "/api/customers" && request.method === "GET") {
+  const { results } = await env.DB.prepare(
+    `SELECT phone, name, email, customer_id FROM customers ORDER BY name`
+  ).all();
+  return withCORS(Response.json(results));
+}
+
+    
     // --- Admin sends a reply ---
     if (url.pathname === "/api/send-message" && request.method === "POST") {
       const { phone, body } = await request.json();
