@@ -1,5 +1,3 @@
-// src/index.js
-
 import { sendWhatsAppMessage } from './whatsapp.js';
 import { routeCommand } from './commands.js';
 
@@ -38,11 +36,43 @@ export default {
 
       const from = msgObj.from;
       const now  = Date.now();
-      let   userInput     = "";
-      let   media_url     = null;
-      let   location_json = null;
 
-      // Parse incoming message of any type
+      // ---- 0) GLOBAL & HOLIDAY CLOSURE ----
+      // a) Global emergency closure?
+      const g = await env.DB
+        .prepare(`SELECT closed, message FROM office_global LIMIT 1`)
+        .first();
+      if (g?.closed) {
+        const auto = g.message || "Our office is currently closed. We’ll get back to you when we reopen.";
+        await sendWhatsAppMessage(from, auto, env);
+        await env.DB.prepare(
+          `INSERT INTO messages
+             (from_number, body, tag, timestamp, direction)
+           VALUES (?, ?, 'system', ?, 'outgoing')`
+        ).bind(from, auto, now).run();
+        return Response.json({ ok: true });
+      }
+      // b) Public holiday?
+      const today = new Date().toISOString().slice(0,10);
+      const holiday = await env.DB
+        .prepare(`SELECT 1 FROM public_holidays WHERE date = ?`)
+        .bind(today)
+        .first();
+      if (holiday) {
+        const auto = "We’re closed today for a public holiday. We’ll reply as soon as we return.";
+        await sendWhatsAppMessage(from, auto, env);
+        await env.DB.prepare(
+          `INSERT INTO messages
+             (from_number, body, tag, timestamp, direction)
+           VALUES (?, ?, 'system', ?, 'outgoing')`
+        ).bind(from, auto, now).run();
+        return Response.json({ ok: true });
+      }
+
+      // ---- parse incoming message ----
+      let userInput     = "";
+      let media_url     = null;
+      let location_json = null;
       const type = msgObj.type;
       if (type === "text") {
         userInput = msgObj.text.body.trim();
@@ -54,11 +84,13 @@ export default {
           const autoReply = "Sorry, but we cannot receive voice notes. Please send text or documents.";
           await sendWhatsAppMessage(from, autoReply, env);
           await env.DB.prepare(
-            `INSERT INTO messages (from_number, body, tag, timestamp, direction, media_url)
+            `INSERT INTO messages
+               (from_number, body, tag, timestamp, direction, media_url)
              VALUES (?, ?, 'lead', ?, 'incoming', ?)`
           ).bind(from, "[Voice Note]", now, msgObj.audio.url).run();
           await env.DB.prepare(
-            `INSERT INTO messages (from_number, body, tag, timestamp, direction)
+            `INSERT INTO messages
+               (from_number, body, tag, timestamp, direction)
              VALUES (?, ?, 'lead', ?, 'outgoing')`
           ).bind(from, autoReply, now).run();
           await env.DB.prepare(
@@ -81,89 +113,63 @@ export default {
         if (msgObj[type]?.url) media_url = msgObj[type].url;
       }
 
-      // Lookup customer in our own table
+      // ---- lookup in your own customers table ----
       const customer = await env.DB
         .prepare(`SELECT * FROM customers WHERE phone = ?`)
         .bind(from)
         .first();
 
       // greeting keywords
-      const greetings = ["hi","hello","hey","good day"];
+      const greetingKeywords = ["hi", "hello", "good day", "hey"];
       const lc = userInput.toLowerCase();
 
-      // --- VERIFIED CUSTOMER FLOW ---
+      // ---- VERIFIED CUSTOMER FLOW ----
       if (customer && customer.verified === 1) {
-        // 1) on greeting, show main menu
-        if (greetings.includes(lc)) {
-          const firstName = (customer.name||"").split(" ")[0] || "";
+        if (greetingKeywords.includes(lc)) {
+          const firstName = (customer.name || "").split(" ")[0] || "";
           const reply =
             `Hello ${firstName}! How can we help you today?\n` +
             `1. Support\n2. Sales\n3. Accounts`;
           await sendWhatsAppMessage(from, reply, env);
           await env.DB.prepare(
-            `INSERT INTO messages (from_number, body, tag, timestamp, direction)
+            `INSERT INTO messages
+               (from_number, body, tag, timestamp, direction)
              VALUES (?, ?, 'customer', ?, 'outgoing')`
           ).bind(from, reply, now).run();
           return Response.json({ ok: true });
         }
 
-        // 2) department choice
-        let deptTag = null;
-        if (userInput === "1") deptTag = "support";
-        else if (userInput === "2") deptTag = "sales";
-        else if (userInput === "3") deptTag = "accounts";
+        // department choice
+        let tag = null;
+        if (userInput === "1") tag = "support";
+        else if (userInput === "2") tag = "sales";
+        else if (userInput === "3") tag = "accounts";
 
-        if (deptTag) {
-          // create a date-based ticket: YYYY-MM-DD-N
-          const today = new Date().toISOString().slice(0,10);
-          const dayStart = Date.parse(`${today}T00:00:00Z`);
-          const dayEnd   = Date.parse(`${today}T23:59:59Z`);
-          const { count=0 } = await env.DB.prepare(
-            `SELECT COUNT(*) AS count
-               FROM chatsessions
-              WHERE start_ts BETWEEN ? AND ?`
-          ).bind(dayStart, dayEnd).first();
-          const ticket = `${today}-${count+1}`;
-          // insert session
+        if (tag) {
           await env.DB.prepare(
-            `INSERT INTO chatsessions
-               (phone, ticket, department, start_ts)
-             VALUES (?, ?, ?, ?)`
-          ).bind(from, ticket, deptTag, now).run();
+            `UPDATE messages SET tag = ? WHERE from_number = ?`
+          ).bind(tag, from).run();
 
-          const ack = `✅ Your session ticket: *${ticket}* (Dept: ${deptTag}). How can we assist you?`;
-          await sendWhatsAppMessage(from, ack, env);
+          const reply = `You've been connected with ${tag}. How may we assist you further?`;
+          await sendWhatsAppMessage(from, reply, env);
           await env.DB.prepare(
-            `INSERT INTO messages (from_number, body, tag, timestamp, direction)
+            `INSERT INTO messages
+               (from_number, body, tag, timestamp, direction)
              VALUES (?, ?, ?, ?, 'outgoing')`
-          ).bind(from, ack, deptTag, now).run();
+          ).bind(from, reply, tag, now).run();
           return Response.json({ ok: true });
         }
-
-        // 3) fallback to your existing routeCommand logic
-        const reply = await routeCommand({ userInput, customer, env });
-        await sendWhatsAppMessage(from, reply, env);
-        await env.DB.prepare(
-          `INSERT INTO messages
-             (from_number, body, tag, timestamp, direction, media_url, location_json)
-           VALUES (?, ?, ?, ?, 'incoming', ?, ?)`
-        ).bind(from, userInput, customer.tag||'customer', now, media_url, location_json).run();
-        await env.DB.prepare(
-          `INSERT INTO messages (from_number, body, tag, timestamp, direction)
-           VALUES (?, ?, ?, ?, 'outgoing')`
-        ).bind(from, reply, customer.tag||'customer', now).run();
-        return Response.json({ ok: true });
+        // otherwise drop through to normal routing
       }
 
-      // --- NEW / UNVERIFIED CLIENT FLOW ---
+      // ---- NEW / UNVERIFIED FLOW ----
       const prompt =
         "Welcome! Are you an existing Vinet client? If yes, reply with:\n" +
         "`First Last, you@example.com, YourCustomerID`\n" +
         "If not, reply with `new` and we’ll treat you as a lead.";
       await sendWhatsAppMessage(from, prompt, env);
       await env.DB.prepare(
-        `INSERT OR IGNORE INTO customers
-           (phone, name, email, verified)
+        `INSERT OR IGNORE INTO customers (phone, name, email, verified)
          VALUES (?, '', '', 0)`
       ).bind(from).run();
       await env.DB.prepare(
@@ -174,55 +180,51 @@ export default {
       return Response.json({ ok: true });
     }
 
-    // --- API: List open chats ---
+    // ---- Dashboard & API endpoints ----
+
+    // List open chats
     if (url.pathname === "/api/chats" && request.method === "GET") {
       const sql = `
-        SELECT
-          m.from_number,
-          c.name, c.email, c.customer_id,
-          MAX(m.timestamp) AS last_ts,
-          (SELECT body FROM messages m2
-             WHERE m2.from_number=m.from_number
-             ORDER BY m2.timestamp DESC LIMIT 1) AS last_message,
-          SUM(CASE WHEN m.direction='incoming'
-                   AND (m.seen IS NULL OR m.seen=0) THEN 1 ELSE 0 END)
-            AS unread_count,
-          (SELECT tag FROM messages m3
-             WHERE m3.from_number=m.from_number
-             ORDER BY m3.timestamp DESC LIMIT 1) AS tag
+        SELECT m.from_number, c.name, c.email, c.customer_id,
+               MAX(m.timestamp) as last_ts,
+               (SELECT body FROM messages m2
+                  WHERE m2.from_number=m.from_number
+                  ORDER BY m2.timestamp DESC LIMIT 1) as last_message,
+               SUM(CASE WHEN m.direction='incoming'
+                        AND (m.seen IS NULL OR m.seen=0) THEN 1 ELSE 0 END)
+                 AS unread_count,
+               (SELECT tag FROM messages m3
+                  WHERE m3.from_number=m.from_number
+                  ORDER BY m3.timestamp DESC LIMIT 1) as tag
         FROM messages m
         LEFT JOIN customers c ON c.phone=m.from_number
         WHERE (m.closed IS NULL OR m.closed=0)
         GROUP BY m.from_number
         ORDER BY last_ts DESC
-        LIMIT 50
-      `;
+        LIMIT 50`;
       const { results } = await env.DB.prepare(sql).all();
       return withCORS(Response.json(results));
     }
 
-    // --- API: List closed chats ---
+    // List closed chats
     if (url.pathname === "/api/closed-chats" && request.method === "GET") {
       const sql = `
-        SELECT
-          m.from_number,
-          c.name, c.email, c.customer_id,
-          MAX(m.timestamp) AS last_ts,
-          (SELECT body FROM messages m2
-             WHERE m2.from_number=m.from_number
-             ORDER BY m2.timestamp DESC LIMIT 1) AS last_message
+        SELECT m.from_number, c.name, c.email, c.customer_id,
+               MAX(m.timestamp) as last_ts,
+               (SELECT body FROM messages m2
+                  WHERE m2.from_number=m.from_number
+                  ORDER BY m2.timestamp DESC LIMIT 1) as last_message
         FROM messages m
         LEFT JOIN customers c ON c.phone=m.from_number
         WHERE m.closed=1
         GROUP BY m.from_number
         ORDER BY last_ts DESC
-        LIMIT 50
-      `;
+        LIMIT 50`;
       const { results } = await env.DB.prepare(sql).all();
       return withCORS(Response.json(results));
     }
 
-    // --- API: List messages in a chat ---
+    // List messages in a chat
     if (url.pathname === "/api/messages" && request.method === "GET") {
       const phone = url.searchParams.get("phone");
       if (!phone) return withCORS(new Response("Missing phone", { status: 400 }));
@@ -231,30 +233,28 @@ export default {
         FROM messages
         WHERE from_number=?
         ORDER BY timestamp ASC
-        LIMIT 200
-      `;
+        LIMIT 200`;
       const { results } = await env.DB.prepare(sql).bind(phone).all();
       return withCORS(Response.json(results));
     }
 
-    // --- API: Close a chat ---
+    // Close chat
     if (url.pathname === "/api/close-chat" && request.method === "POST") {
       const { phone } = await request.json();
       if (!phone) return withCORS(new Response("Missing phone", { status: 400 }));
-      // mark closed
       await env.DB.prepare(`UPDATE messages SET closed=1 WHERE from_number=?`)
         .bind(phone).run();
-      // auto-notify the client
-      const notice = "This session has been closed. To start a new chat, just say ‘hi’ again.";
-      await sendWhatsAppMessage(phone, notice, env);
+      const auto = "Your session has been closed. To start a new chat, just say hi.";
+      await sendWhatsAppMessage(phone, auto, env);
       await env.DB.prepare(
-        `INSERT INTO messages (from_number, body, tag, timestamp, direction)
+        `INSERT INTO messages
+           (from_number, body, tag, timestamp, direction)
          VALUES (?, ?, 'system', ?, 'outgoing')`
-      ).bind(phone, notice, Date.now()).run();
+      ).bind(phone, auto, Date.now()).run();
       return withCORS(Response.json({ ok: true }));
     }
 
-    // --- API: Admin sends a reply ---
+    // Admin sends a reply
     if (url.pathname === "/api/send-message" && request.method === "POST") {
       const { phone, body } = await request.json();
       if (!phone || !body) return withCORS(new Response("Missing fields", { status: 400 }));
@@ -268,7 +268,7 @@ export default {
       return withCORS(Response.json({ ok: true }));
     }
 
-    // --- API: Set a message/chat tag manually ---
+    // Set a message/chat tag
     if (url.pathname === "/api/set-tag" && request.method === "POST") {
       const { from_number, tag } = await request.json();
       if (!from_number || !tag) return withCORS(new Response("Missing fields", { status: 400 }));
@@ -277,7 +277,7 @@ export default {
       return withCORS(Response.json({ ok: true }));
     }
 
-    // --- API: Update customer & mark verified ---
+    // Update customer & mark verified
     if (url.pathname === "/api/update-customer" && request.method === "POST") {
       const { phone, name, customer_id, email } = await request.json();
       if (!phone) return withCORS(new Response("Missing phone", { status: 400 }));
@@ -293,28 +293,7 @@ export default {
       return withCORS(Response.json({ ok: true }));
     }
 
-    // --- API: GET customers (for Send Message page) ---
-    if (url.pathname === "/api/customers" && request.method === "GET") {
-      const { results } = await env.DB.prepare(
-        `SELECT phone, name, customer_id, email
-           FROM customers
-          ORDER BY name`
-      ).all();
-      return withCORS(Response.json(results));
-    }
-
-// GET /api/chat-sessions?phone=…
-if (url.pathname === "/api/chat-sessions" && request.method === "GET") {
-  const phone = url.searchParams.get("phone");
-  const { results } = await env.DB.prepare(
-    `SELECT id, ticket, department, start_ts, end_ts
-       FROM chatsessions WHERE phone = ? ORDER BY start_ts DESC`
-  ).bind(phone).all();
-  return withCORS(Response.json(results));
-}
-
-    
-    // --- API: Auto-Replies CRUD ---
+    // Auto-Replies CRUD
     if (url.pathname === "/api/auto-replies" && request.method === "GET") {
       const { results } = await env.DB.prepare(`SELECT * FROM auto_replies`).all();
       return Response.json(results);
@@ -340,74 +319,42 @@ if (url.pathname === "/api/chat-sessions" && request.method === "GET") {
       return Response.json({ ok: true });
     }
 
-    // --- API: Departmental chat lists ---
-    if (url.pathname === "/api/support-chats" && request.method === "GET") {
+    // Dept-specific chat lists
+    const deptLists = {
+      "/api/support-chats":  "support",
+      "/api/accounts-chats": "accounts",
+      "/api/sales-chats":    "sales",
+    };
+    if (deptLists[url.pathname] && request.method === "GET") {
+      const tag = deptLists[url.pathname];
       const sql = `
         SELECT m.from_number, c.name, c.email, c.customer_id,
-               MAX(m.timestamp) AS last_ts,
+               MAX(m.timestamp) as last_ts,
                (SELECT body FROM messages m2
                   WHERE m2.from_number=m.from_number
-                  ORDER BY m2.timestamp DESC LIMIT 1) AS last_message
+                  ORDER BY m2.timestamp DESC LIMIT 1) as last_message
         FROM messages m
         LEFT JOIN customers c ON c.phone=m.from_number
-        WHERE m.tag='support' AND (m.closed IS NULL OR m.closed=0)
+        WHERE m.tag='${tag}' AND (m.closed IS NULL OR m.closed=0)
         GROUP BY m.from_number
-        ORDER BY last_ts DESC
-        LIMIT 200
-      `;
-      const { results } = await env.DB.prepare(sql).all();
-      return withCORS(Response.json(results));
-    }
-    if (url.pathname === "/api/accounts-chats" && request.method === "GET") {
-      const sql = `
-        SELECT m.from_number, c.name, c.email, c.customer_id,
-               MAX(m.timestamp) AS last_ts,
-               (SELECT body FROM messages m2
-                  WHERE m2.from_number=m.from_number
-                  ORDER BY m2.timestamp DESC LIMIT 1) AS last_message
-        FROM messages m
-        LEFT JOIN customers c ON c.phone=m.from_number
-        WHERE m.tag='accounts' AND (m.closed IS NULL OR m.closed=0)
-        GROUP BY m.from_number
-        ORDER BY last_ts DESC
-        LIMIT 200
-      `;
-      const { results } = await env.DB.prepare(sql).all();
-      return withCORS(Response.json(results));
-    }
-    if (url.pathname === "/api/sales-chats" && request.method === "GET") {
-      const sql = `
-        SELECT m.from_number, c.name, c.email, c.customer_id,
-               MAX(m.timestamp) AS last_ts,
-               (SELECT body FROM messages m2
-                  WHERE m2.from_number=m.from_number
-                  ORDER BY m2.timestamp DESC LIMIT 1) AS last_message
-        FROM messages m
-        LEFT JOIN customers c ON c.phone=m.from_number
-        WHERE m.tag='sales' AND (m.closed IS NULL OR m.closed=0)
-        GROUP BY m.from_number
-        ORDER BY last_ts DESC
-        LIMIT 200
-      `;
+        ORDER BY last_ts DESC LIMIT 200`;
       const { results } = await env.DB.prepare(sql).all();
       return withCORS(Response.json(results));
     }
 
-    // --- API: Unlinked / Unverified clients ---
+    // Unlinked / unverified clients
     if (url.pathname === "/api/unlinked-clients" && request.method === "GET") {
       const sql = `
         SELECT m.from_number,
                MAX(m.timestamp) AS last_msg,
-               COALESCE(c.name,'')  AS name,
+               COALESCE(c.name,'') AS name,
                COALESCE(c.email,'') AS email
         FROM messages m
         LEFT JOIN customers c ON m.from_number=c.phone
         WHERE m.tag='unverified'
           AND (c.verified IS NULL OR c.verified=0 OR c.customer_id IS NULL OR c.customer_id='')
         GROUP BY m.from_number
-        ORDER BY last_msg DESC
-        LIMIT 200
-      `;
+        ORDER BY last_msg DESC LIMIT 200`;
       try {
         const { results } = await env.DB.prepare(sql).all();
         return withCORS(Response.json(results));
@@ -416,19 +363,18 @@ if (url.pathname === "/api/chat-sessions" && request.method === "GET") {
       }
     }
 
-    // --- API: Sync customers from messages ---
+    // Sync customers from messages
     if (url.pathname === "/api/customers-sync" && request.method === "POST") {
       const syncSql = `
         INSERT OR IGNORE INTO customers (phone, name, email, verified)
         SELECT DISTINCT from_number, '', '', 0
-          FROM messages
-         WHERE from_number NOT IN (SELECT phone FROM customers)
-      `;
+        FROM messages
+        WHERE from_number NOT IN (SELECT phone FROM customers)`;
       await env.DB.prepare(syncSql).run();
       return withCORS(Response.json({ ok: true, message: "Synced." }));
     }
 
-    // --- API: Admin users (admins table) ---
+    // Admin user management
     if (url.pathname === "/api/users" && request.method === "GET") {
       const { results } = await env.DB.prepare(
         `SELECT id, username, role FROM admins ORDER BY username`
@@ -437,54 +383,53 @@ if (url.pathname === "/api/chat-sessions" && request.method === "GET") {
     }
     if (url.pathname === "/api/add-user" && request.method === "POST") {
       const { username, password, role } = await request.json();
-      if (!username || !password || !role)
-        return withCORS(new Response("Missing fields", { status: 400 }));
+      if (!username||!password||!role) return withCORS(new Response("Missing fields", { status:400 }));
       await env.DB.prepare(
-        `INSERT INTO admins (username, password, role) VALUES (?, ?, ?)`
-      ).bind(username, password, role).run();
-      return withCORS(Response.json({ ok: true }));
+        `INSERT INTO admins (username,password,role) VALUES(?,?,?)`
+      ).bind(username,password,role).run();
+      return withCORS(Response.json({ ok:true }));
     }
     if (url.pathname === "/api/delete-user" && request.method === "POST") {
       const { id } = await request.json();
-      if (!id) return withCORS(new Response("Missing user id", { status: 400 }));
+      if (!id) return withCORS(new Response("Missing user id", { status:400 }));
       await env.DB.prepare(`DELETE FROM admins WHERE id=?`).bind(id).run();
-      return withCORS(Response.json({ ok: true }));
+      return withCORS(Response.json({ ok:true }));
     }
 
-    // --- API: Office hours ---
+    // Office hours endpoints
     if (url.pathname === "/api/office-hours" && request.method === "GET") {
       const { results } = await env.DB.prepare(`SELECT * FROM office_hours`).all();
       return withCORS(Response.json(results));
     }
     if (url.pathname === "/api/office-hours" && request.method === "POST") {
       const { tag, day, open_time, close_time, closed } = await request.json();
-      if (typeof tag !== "string" || typeof day !== "number")
-        return withCORS(new Response("Missing fields", { status: 400 }));
+      if (typeof tag!=="string"||typeof day!=="number") {
+        return withCORS(new Response("Missing fields", { status:400 }));
+      }
       await env.DB.prepare(`
-        INSERT INTO office_hours (tag, day, open_time, close_time, closed)
-        VALUES (?, ?, ?, ?, ?)
-        ON CONFLICT(tag, day) DO UPDATE SET
-          open_time = excluded.open_time,
-          close_time = excluded.close_time,
-          closed    = excluded.closed
-      `).bind(tag, day, open_time, close_time, closed ? 1 : 0).run();
-      return withCORS(Response.json({ ok: true }));
+        INSERT INTO office_hours (tag,day,open_time,close_time,closed)
+        VALUES(?,?,?,?,?)
+        ON CONFLICT(tag,day) DO UPDATE SET
+          open_time=excluded.open_time,
+          close_time=excluded.close_time,
+          closed=excluded.closed
+      `).bind(tag,day,open_time,close_time,closed?1:0).run();
+      return withCORS(Response.json({ ok:true }));
     }
 
-    // --- API: Global office open/close ---
     if (url.pathname === "/api/office-global" && request.method === "GET") {
       const { results } = await env.DB.prepare(`SELECT * FROM office_global LIMIT 1`).all();
-      return withCORS(Response.json(results[0] || { closed: 0, message: "" }));
+      return withCORS(Response.json(results[0]||{ closed:0,message:"" }));
     }
     if (url.pathname === "/api/office-global" && request.method === "POST") {
       const { closed, message } = await request.json();
       await env.DB.prepare(
-        `UPDATE office_global SET closed = ?, message = ? WHERE id = 1`
-      ).bind(closed ? 1 : 0, message || "").run();
-      return withCORS(Response.json({ ok: true }));
+        `UPDATE office_global SET closed=?, message=? WHERE id=1`
+      ).bind(closed?1:0, message||"").run();
+      return withCORS(Response.json({ ok:true }));
     }
 
-    // --- API: Public holidays ---
+    // Public holidays endpoints
     if (url.pathname === "/api/public-holidays" && request.method === "GET") {
       const { results } = await env.DB.prepare(`SELECT * FROM public_holidays ORDER BY date`).all();
       return withCORS(Response.json(results));
@@ -492,86 +437,25 @@ if (url.pathname === "/api/chat-sessions" && request.method === "GET") {
     if (url.pathname === "/api/public-holidays" && request.method === "POST") {
       const { date, name } = await request.json();
       await env.DB.prepare(
-        `INSERT INTO public_holidays (date, name) VALUES (?, ?)`
-      ).bind(date, name).run();
-      return withCORS(Response.json({ ok: true }));
+        `INSERT INTO public_holidays (date,name) VALUES(?,?)`
+      ).bind(date,name).run();
+      return withCORS(Response.json({ ok:true }));
     }
     if (url.pathname === "/api/public-holidays/delete" && request.method === "POST") {
       const { id } = await request.json();
-      await env.DB.prepare(`DELETE FROM public_holidays WHERE id = ?`).bind(id).run();
-      return withCORS(Response.json({ ok: true }));
+      await env.DB.prepare(`DELETE FROM public_holidays WHERE id=?`).bind(id).run();
+      return withCORS(Response.json({ ok:true }));
     }
 
-    // --- API: Flows CRUD ---
-    if (url.pathname === "/api/flows" && request.method === "GET") {
-      const { results } = await env.DB.prepare(`SELECT * FROM flows ORDER BY id`).all();
-      return withCORS(Response.json(results));
-    }
-    if (url.pathname === "/api/flows" && request.method === "POST") {
-      const { id, name, trigger } = await request.json();
-      const nowTs = Date.now();
-      if (id) {
-        await env.DB.prepare(
-          `UPDATE flows SET name = ?, trigger = ?, updated_ts = ? WHERE id = ?`
-        ).bind(name, trigger, nowTs, id).run();
-      } else {
-        await env.DB.prepare(
-          `INSERT INTO flows (name, trigger, created_ts) VALUES (?, ?, ?)`
-        ).bind(name, trigger, nowTs).run();
-      }
-      return withCORS(Response.json({ ok: true }));
-    }
-    if (url.pathname === "/api/flows/delete" && request.method === "POST") {
-      const { id } = await request.json();
-      if (!id) return withCORS(new Response("Missing flow id", { status: 400 }));
-      // cascade delete steps
-      await env.DB.prepare(`DELETE FROM flow_steps WHERE flow_id = ?`).bind(id).run();
-      await env.DB.prepare(`DELETE FROM flows WHERE id = ?`).bind(id).run();
-      return withCORS(Response.json({ ok: true }));
-    }
-
-    // --- API: Flow-Steps CRUD ---
-    if (url.pathname === "/api/flow-steps" && request.method === "GET") {
-      const flowId = Number(url.searchParams.get("flow_id") || 0);
-      if (!flowId) return withCORS(new Response("Missing flow_id", { status: 400 }));
-      const { results } = await env.DB.prepare(
-        `SELECT * FROM flow_steps WHERE flow_id = ? ORDER BY step_order`
-      ).bind(flowId).all();
-      return withCORS(Response.json(results));
-    }
-    if (url.pathname === "/api/flow-steps" && request.method === "POST") {
-      const { id, flow_id, step_order, type, message } = await request.json();
-      if (!flow_id || !type) return withCORS(new Response("Missing fields", { status: 400 }));
-      if (id) {
-        await env.DB.prepare(
-          `UPDATE flow_steps
-              SET step_order = ?, type = ?, message = ?
-            WHERE id = ?`
-        ).bind(step_order, type, message, id).run();
-      } else {
-        await env.DB.prepare(
-          `INSERT INTO flow_steps (flow_id, step_order, type, message)
-           VALUES (?, ?, ?, ?)`
-        ).bind(flow_id, step_order, type, message).run();
-      }
-      return withCORS(Response.json({ ok: true }));
-    }
-    if (url.pathname === "/api/flow-steps/delete" && request.method === "POST") {
-      const { id } = await request.json();
-      if (!id) return withCORS(new Response("Missing step id", { status: 400 }));
-      await env.DB.prepare(`DELETE FROM flow_steps WHERE id = ?`).bind(id).run();
-      return withCORS(Response.json({ ok: true }));
-    }
-
-    // --- Serve static HTML (dashboard SPA) ---
+    // Serve static assets
     if (url.pathname === "/" || url.pathname === "/index.html") {
       if (env.ASSETS) {
-        return env.ASSETS.fetch(new Request(url.origin + '/index.html'));
+        return env.ASSETS.fetch(new Request(url.origin + "/index.html"));
       }
-      return new Response("Dashboard static assets missing", { status: 404 });
+      return new Response("Missing static assets", { status: 404 });
     }
 
-    // --- Fallback ---
+    // Fallback
     return new Response("Not found", { status: 404 });
   }
 };
