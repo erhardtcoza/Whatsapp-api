@@ -42,7 +42,7 @@ export default {
       let   media_url     = null;
       let   location_json = null;
 
-      // --- parse incoming message ---
+      // Parse incoming message of any type
       const type = msgObj.type;
       if (type === "text") {
         userInput = msgObj.text.body.trim();
@@ -53,7 +53,6 @@ export default {
         if (msgObj.audio?.voice) {
           const autoReply = "Sorry, but we cannot receive voice notes. Please send text or documents.";
           await sendWhatsAppMessage(from, autoReply, env);
-          // log the voice note and our reply
           await env.DB.prepare(
             `INSERT INTO messages (from_number, body, tag, timestamp, direction, media_url)
              VALUES (?, ?, 'lead', ?, 'incoming', ?)`
@@ -62,7 +61,6 @@ export default {
             `INSERT INTO messages (from_number, body, tag, timestamp, direction)
              VALUES (?, ?, 'lead', ?, 'outgoing')`
           ).bind(from, autoReply, now).run();
-          // ensure customer row exists
           await env.DB.prepare(
             `INSERT OR IGNORE INTO customers (phone, name, email, verified)
              VALUES (?, '', '', 0)`
@@ -83,21 +81,21 @@ export default {
         if (msgObj[type]?.url) media_url = msgObj[type].url;
       }
 
-      // --- lookup in your own customers table ---
+      // Lookup customer in our own table
       const customer = await env.DB
         .prepare(`SELECT * FROM customers WHERE phone = ?`)
         .bind(from)
         .first();
 
       // greeting keywords
-      const greetings = ["hi", "hello", "hey", "good day"];
+      const greetings = ["hi","hello","hey","good day"];
       const lc = userInput.toLowerCase();
 
       // --- VERIFIED CUSTOMER FLOW ---
       if (customer && customer.verified === 1) {
-        // a) greeting → show menu
+        // 1) on greeting, show main menu
         if (greetings.includes(lc)) {
-          const firstName = (customer.name || "").split(" ")[0] || "";
+          const firstName = (customer.name||"").split(" ")[0] || "";
           const reply =
             `Hello ${firstName}! How can we help you today?\n` +
             `1. Support\n2. Sales\n3. Accounts`;
@@ -109,29 +107,27 @@ export default {
           return Response.json({ ok: true });
         }
 
-        // b) department selection
+        // 2) department choice
         let deptTag = null;
         if (userInput === "1") deptTag = "support";
         else if (userInput === "2") deptTag = "sales";
         else if (userInput === "3") deptTag = "accounts";
 
         if (deptTag) {
-          // --- create a date-based session ticket ---
-          const today = new Date().toISOString().slice(0, 10); // "YYYY-MM-DD"
+          // create a date-based ticket: YYYY-MM-DD-N
+          const today = new Date().toISOString().slice(0,10);
           const dayStart = Date.parse(`${today}T00:00:00Z`);
           const dayEnd   = Date.parse(`${today}T23:59:59Z`);
-
-          const { count = 0 } = await env.DB.prepare(
+          const { count=0 } = await env.DB.prepare(
             `SELECT COUNT(*) AS count
                FROM chatsessions
               WHERE start_ts BETWEEN ? AND ?`
           ).bind(dayStart, dayEnd).first();
-
-          const sessionNum = count + 1;
-          const ticket = `${today}-${sessionNum}`;
-
+          const ticket = `${today}-${count+1}`;
+          // insert session
           await env.DB.prepare(
-            `INSERT INTO chatsessions (phone, ticket, department, start_ts)
+            `INSERT INTO chatsessions
+               (phone, ticket, department, start_ts)
              VALUES (?, ?, ?, ?)`
           ).bind(from, ticket, deptTag, now).run();
 
@@ -144,18 +140,18 @@ export default {
           return Response.json({ ok: true });
         }
 
-        // c) fallback: pass through your normal routing logic
+        // 3) fallback to your existing routeCommand logic
         const reply = await routeCommand({ userInput, customer, env });
         await sendWhatsAppMessage(from, reply, env);
         await env.DB.prepare(
           `INSERT INTO messages
              (from_number, body, tag, timestamp, direction, media_url, location_json)
            VALUES (?, ?, ?, ?, 'incoming', ?, ?)`
-        ).bind(from, userInput, customer.tag || 'customer', now, media_url, location_json).run();
+        ).bind(from, userInput, customer.tag||'customer', now, media_url, location_json).run();
         await env.DB.prepare(
           `INSERT INTO messages (from_number, body, tag, timestamp, direction)
            VALUES (?, ?, ?, ?, 'outgoing')`
-        ).bind(from, reply, customer.tag || 'customer', now).run();
+        ).bind(from, reply, customer.tag||'customer', now).run();
         return Response.json({ ok: true });
       }
 
@@ -165,17 +161,16 @@ export default {
         "`First Last, you@example.com, YourCustomerID`\n" +
         "If not, reply with `new` and we’ll treat you as a lead.";
       await sendWhatsAppMessage(from, prompt, env);
-
       await env.DB.prepare(
-        `INSERT OR IGNORE INTO customers (phone, name, email, verified)
+        `INSERT OR IGNORE INTO customers
+           (phone, name, email, verified)
          VALUES (?, '', '', 0)`
       ).bind(from).run();
-
       await env.DB.prepare(
-        `INSERT INTO messages (from_number, body, tag, timestamp, direction)
+        `INSERT INTO messages
+           (from_number, body, tag, timestamp, direction)
          VALUES (?, ?, 'unverified', ?, 'outgoing')`
       ).bind(from, prompt, now).run();
-
       return Response.json({ ok: true });
     }
 
@@ -187,17 +182,17 @@ export default {
           c.name, c.email, c.customer_id,
           MAX(m.timestamp) AS last_ts,
           (SELECT body FROM messages m2
-             WHERE m2.from_number = m.from_number
+             WHERE m2.from_number=m.from_number
              ORDER BY m2.timestamp DESC LIMIT 1) AS last_message,
           SUM(CASE WHEN m.direction='incoming'
                    AND (m.seen IS NULL OR m.seen=0) THEN 1 ELSE 0 END)
             AS unread_count,
           (SELECT tag FROM messages m3
-             WHERE m3.from_number = m.from_number
+             WHERE m3.from_number=m.from_number
              ORDER BY m3.timestamp DESC LIMIT 1) AS tag
         FROM messages m
-        LEFT JOIN customers c ON c.phone = m.from_number
-        WHERE (m.closed IS NULL OR m.closed = 0)
+        LEFT JOIN customers c ON c.phone=m.from_number
+        WHERE (m.closed IS NULL OR m.closed=0)
         GROUP BY m.from_number
         ORDER BY last_ts DESC
         LIMIT 50
@@ -214,11 +209,11 @@ export default {
           c.name, c.email, c.customer_id,
           MAX(m.timestamp) AS last_ts,
           (SELECT body FROM messages m2
-             WHERE m2.from_number = m.from_number
+             WHERE m2.from_number=m.from_number
              ORDER BY m2.timestamp DESC LIMIT 1) AS last_message
         FROM messages m
-        LEFT JOIN customers c ON c.phone = m.from_number
-        WHERE m.closed = 1
+        LEFT JOIN customers c ON c.phone=m.from_number
+        WHERE m.closed=1
         GROUP BY m.from_number
         ORDER BY last_ts DESC
         LIMIT 50
@@ -234,7 +229,7 @@ export default {
       const sql = `
         SELECT id, from_number, body, tag, timestamp, direction, media_url, location_json
         FROM messages
-        WHERE from_number = ?
+        WHERE from_number=?
         ORDER BY timestamp ASC
         LIMIT 200
       `;
@@ -249,7 +244,7 @@ export default {
       // mark closed
       await env.DB.prepare(`UPDATE messages SET closed=1 WHERE from_number=?`)
         .bind(phone).run();
-      // notify customer
+      // auto-notify the client
       const notice = "This session has been closed. To start a new chat, just say ‘hi’ again.";
       await sendWhatsAppMessage(phone, notice, env);
       await env.DB.prepare(
@@ -273,7 +268,7 @@ export default {
       return withCORS(Response.json({ ok: true }));
     }
 
-    // --- API: Set message/chat tag manually ---
+    // --- API: Set a message/chat tag manually ---
     if (url.pathname === "/api/set-tag" && request.method === "POST") {
       const { from_number, tag } = await request.json();
       if (!from_number || !tag) return withCORS(new Response("Missing fields", { status: 400 }));
@@ -296,6 +291,16 @@ export default {
           verified=1
       `).bind(phone, name, customer_id, email).run();
       return withCORS(Response.json({ ok: true }));
+    }
+
+    // --- API: GET customers (for Send Message page) ---
+    if (url.pathname === "/api/customers" && request.method === "GET") {
+      const { results } = await env.DB.prepare(
+        `SELECT phone, name, customer_id, email
+           FROM customers
+          ORDER BY name`
+      ).all();
+      return withCORS(Response.json(results));
     }
 
     // --- API: Auto-Replies CRUD ---
@@ -486,7 +491,68 @@ export default {
       return withCORS(Response.json({ ok: true }));
     }
 
-    // --- Serve dashboard ---
+    // --- API: Flows CRUD ---
+    if (url.pathname === "/api/flows" && request.method === "GET") {
+      const { results } = await env.DB.prepare(`SELECT * FROM flows ORDER BY id`).all();
+      return withCORS(Response.json(results));
+    }
+    if (url.pathname === "/api/flows" && request.method === "POST") {
+      const { id, name, trigger } = await request.json();
+      const nowTs = Date.now();
+      if (id) {
+        await env.DB.prepare(
+          `UPDATE flows SET name = ?, trigger = ?, updated_ts = ? WHERE id = ?`
+        ).bind(name, trigger, nowTs, id).run();
+      } else {
+        await env.DB.prepare(
+          `INSERT INTO flows (name, trigger, created_ts) VALUES (?, ?, ?)`
+        ).bind(name, trigger, nowTs).run();
+      }
+      return withCORS(Response.json({ ok: true }));
+    }
+    if (url.pathname === "/api/flows/delete" && request.method === "POST") {
+      const { id } = await request.json();
+      if (!id) return withCORS(new Response("Missing flow id", { status: 400 }));
+      // cascade delete steps
+      await env.DB.prepare(`DELETE FROM flow_steps WHERE flow_id = ?`).bind(id).run();
+      await env.DB.prepare(`DELETE FROM flows WHERE id = ?`).bind(id).run();
+      return withCORS(Response.json({ ok: true }));
+    }
+
+    // --- API: Flow-Steps CRUD ---
+    if (url.pathname === "/api/flow-steps" && request.method === "GET") {
+      const flowId = Number(url.searchParams.get("flow_id") || 0);
+      if (!flowId) return withCORS(new Response("Missing flow_id", { status: 400 }));
+      const { results } = await env.DB.prepare(
+        `SELECT * FROM flow_steps WHERE flow_id = ? ORDER BY step_order`
+      ).bind(flowId).all();
+      return withCORS(Response.json(results));
+    }
+    if (url.pathname === "/api/flow-steps" && request.method === "POST") {
+      const { id, flow_id, step_order, type, message } = await request.json();
+      if (!flow_id || !type) return withCORS(new Response("Missing fields", { status: 400 }));
+      if (id) {
+        await env.DB.prepare(
+          `UPDATE flow_steps
+              SET step_order = ?, type = ?, message = ?
+            WHERE id = ?`
+        ).bind(step_order, type, message, id).run();
+      } else {
+        await env.DB.prepare(
+          `INSERT INTO flow_steps (flow_id, step_order, type, message)
+           VALUES (?, ?, ?, ?)`
+        ).bind(flow_id, step_order, type, message).run();
+      }
+      return withCORS(Response.json({ ok: true }));
+    }
+    if (url.pathname === "/api/flow-steps/delete" && request.method === "POST") {
+      const { id } = await request.json();
+      if (!id) return withCORS(new Response("Missing step id", { status: 400 }));
+      await env.DB.prepare(`DELETE FROM flow_steps WHERE id = ?`).bind(id).run();
+      return withCORS(Response.json({ ok: true }));
+    }
+
+    // --- Serve static HTML (dashboard SPA) ---
     if (url.pathname === "/" || url.pathname === "/index.html") {
       if (env.ASSETS) {
         return env.ASSETS.fetch(new Request(url.origin + '/index.html'));
