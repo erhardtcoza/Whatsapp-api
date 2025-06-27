@@ -475,7 +475,79 @@ export default {
       await env.DB.prepare(`DELETE FROM public_holidays WHERE id=?`).bind(id).run();
       return withCORS(Response.json({ ok:true }));
     }
+  // --- Flow builder: list all flows ---
+  if (url.pathname === "/api/flows" && request.method === "GET") {
+    const { results } = await env.DB.prepare(
+      `SELECT id, name FROM flows ORDER BY id`
+    ).all();
+    return withCORS(Response.json(results));
+  }
 
+  // --- Flow builder: create a new flow ---
+  if (url.pathname === "/api/flow" && request.method === "POST") {
+    const { name } = await request.json();
+    if (!name) return withCORS(new Response("Missing name", { status: 400 }));
+    const insert = await env.DB.prepare(
+      `INSERT INTO flows (name) VALUES (?)`
+    ).bind(name).run();
+    // run() returns lastInsertRowid
+    return withCORS(
+      Response.json({ id: insert.lastInsertRowid, name })
+    );
+  }
+
+  // --- Flow builder: delete a flow and its steps ---
+  if (url.pathname.startsWith("/api/flow/") && request.method === "DELETE") {
+    const flowId = Number(url.pathname.split("/").pop());
+    if (!flowId) return withCORS(new Response("Bad flow id", { status: 400 }));
+    // delete the flow
+    await env.DB.prepare(`DELETE FROM flows WHERE id = ?`).bind(flowId).run();
+    // cascade‐delete its steps
+    await env.DB.prepare(`DELETE FROM flow_steps WHERE flow_id = ?`).bind(flowId).run();
+    return withCORS(Response.json({ ok: true }));
+  }
+
+  // --- Flow builder: get steps for a flow ---
+  if (
+    url.pathname.match(/^\/api\/flows\/\d+\/steps$/) &&
+    request.method === "GET"
+  ) {
+    const flowId = Number(url.pathname.split("/")[2]);
+    const { results } = await env.DB.prepare(
+      `SELECT id, flow_id, condition, response
+         FROM flow_steps
+        WHERE flow_id = ?
+        ORDER BY id`
+    )
+      .bind(flowId)
+      .all();
+    return withCORS(Response.json(results));
+  }
+
+  // --- Flow builder: save (replace) all steps for a flow ---
+  if (
+    url.pathname.match(/^\/api\/flows\/\d+\/steps$/) &&
+    request.method === "POST"
+  ) {
+    const flowId = Number(url.pathname.split("/")[2]);
+    const newSteps = await request.json(); // expect array of { condition, response }
+    // wipe out existing
+    await env.DB.prepare(`DELETE FROM flow_steps WHERE flow_id = ?`)
+      .bind(flowId)
+      .run();
+    // insert each in order
+    for (const step of newSteps) {
+      await env.DB.prepare(
+        `INSERT INTO flow_steps (flow_id, condition, response)
+           VALUES (?, ?, ?)`
+      )
+        .bind(flowId, step.condition, step.response)
+        .run();
+    }
+    return withCORS(Response.json({ ok: true }));
+  }
+
+    
     // --- Serve dashboard static HTML ---
     if (pathname === "/" || pathname === "/index.html") {
       if (env.ASSETS) {
