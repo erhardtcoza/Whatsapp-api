@@ -107,21 +107,22 @@ export default {
           return Response.json({ ok: true });
         }
 
-        // 2) department choice
+        // 2) department choice (with new flow)
         let deptTag = null;
         if (userInput === "1") deptTag = "support";
         else if (userInput === "2") deptTag = "sales";
         else if (userInput === "3") deptTag = "accounts";
 
         if (deptTag) {
-          // create a date-based ticket: YYYY-MM-DD-N
-          const today = new Date().toISOString().slice(0,10);
-          const dayStart = Date.parse(`${today}T00:00:00Z`);
-          const dayEnd   = Date.parse(`${today}T23:59:59Z`);
+          // create a date-based ticket: YYYYMMDDxxx
+          const today = new Date();
+          const yyyymmdd = today.toISOString().slice(0,10).replace(/-/g, "");
+          const dayStart = Date.parse(`${today.toISOString().slice(0,10)}T00:00:00Z`);
+          const dayEnd   = Date.parse(`${today.toISOString().slice(0,10)}T23:59:59Z`);
           const { count=0 } = await env.DB.prepare(
             `SELECT COUNT(*) AS count FROM chatsessions WHERE start_ts BETWEEN ? AND ?`
           ).bind(dayStart, dayEnd).first();
-          const ticket = `${today}-${count+1}`;
+          const ticket = `${yyyymmdd}${(count+1).toString().padStart(3, "0")}`;
           // insert session
           await env.DB.prepare(
             `INSERT INTO chatsessions
@@ -129,7 +130,10 @@ export default {
              VALUES (?, ?, ?, ?)`
           ).bind(from, ticket, deptTag, now).run();
 
-          const ack = `✅ Your session ticket: *${ticket}* (Dept: ${deptTag}). How can we assist you?`;
+          // --- CUSTOM MESSAGE ONLY, NO AUTO REPLY ---
+          const deptName = deptTag.charAt(0).toUpperCase() + deptTag.slice(1);
+          const ack =
+            `Thank you, we have created a chat session with our ${deptName} department: Your ref is ${ticket}, please reply with your message`;
           await sendWhatsAppMessage(from, ack, env);
           await env.DB.prepare(
             `INSERT INTO messages (from_number, body, tag, timestamp, direction)
@@ -138,18 +142,27 @@ export default {
           return Response.json({ ok: true });
         }
 
-        // 3) fallback to your existing routeCommand logic
-        const reply = await routeCommand({ userInput, customer, env });
-        await sendWhatsAppMessage(from, reply, env);
+        // 3) fallback to existing routeCommand (if any), but COMMENT OUT any auto-reply logic
+        // const reply = await routeCommand({ userInput, customer, env });
+        // await sendWhatsAppMessage(from, reply, env);
+        // await env.DB.prepare(
+        //   `INSERT INTO messages
+        //      (from_number, body, tag, timestamp, direction, media_url, location_json)
+        //    VALUES (?, ?, ?, ?, 'incoming', ?, ?)`
+        // ).bind(from, userInput, customer.tag||'customer', now, media_url, location_json).run();
+        // await env.DB.prepare(
+        //   `INSERT INTO messages (from_number, body, tag, timestamp, direction)
+        //    VALUES (?, ?, ?, ?, 'outgoing')`
+        // ).bind(from, reply, customer.tag||'customer', now).run();
+        // return Response.json({ ok: true });
+
+        // Just log message and do nothing (optional)
         await env.DB.prepare(
           `INSERT INTO messages
              (from_number, body, tag, timestamp, direction, media_url, location_json)
            VALUES (?, ?, ?, ?, 'incoming', ?, ?)`
         ).bind(from, userInput, customer.tag||'customer', now, media_url, location_json).run();
-        await env.DB.prepare(
-          `INSERT INTO messages (from_number, body, tag, timestamp, direction)
-           VALUES (?, ?, ?, ?, 'outgoing')`
-        ).bind(from, reply, customer.tag||'customer', now).run();
+
         return Response.json({ ok: true });
       }
 
@@ -172,29 +185,186 @@ export default {
       return Response.json({ ok: true });
     }
 
-    // --- Customers list (for Send Message page) ---
-    if (url.pathname === "/api/customers" && request.method === "GET") {
-      const { results } = await env.DB.prepare(
-        `SELECT phone, name, customer_id, email FROM customers ORDER BY name`
-      ).all();
+    // --- API: List all customers with sessions ---
+    if (url.pathname === "/api/all-customers-with-sessions" && request.method === "GET") {
+      const sql = `
+        SELECT
+          c.phone,
+          c.name,
+          c.customer_id,
+          c.email,
+          (SELECT COUNT(*) FROM chatsessions WHERE chatsessions.phone = c.phone) AS session_count
+        FROM customers c
+        ORDER BY c.name
+      `;
+      const { results } = await env.DB.prepare(sql).all();
       return withCORS(Response.json(results));
     }
-    // Add a customer (Send Message page support)
-    if (url.pathname === "/api/add-customer" && request.method === "POST") {
-      const { phone, name, customer_id, email } = await request.json();
-      if (!phone || !name) return withCORS(new Response("Missing required fields", { status: 400 }));
+
+    // --- API: List open chats ---
+    if (url.pathname === "/api/chats" && request.method === "GET") {
+      const sql = `
+        SELECT
+          m.from_number,
+          c.name, c.email, c.customer_id,
+          MAX(m.timestamp) AS last_ts,
+          (SELECT body FROM messages m2
+             WHERE m2.from_number=m.from_number
+             ORDER BY m2.timestamp DESC LIMIT 1) AS last_message,
+          SUM(CASE WHEN m.direction='incoming'
+                   AND (m.seen IS NULL OR m.seen=0) THEN 1 ELSE 0 END)
+            AS unread_count,
+          (SELECT tag FROM messages m3
+             WHERE m3.from_number=m.from_number
+             ORDER BY m3.timestamp DESC LIMIT 1) AS tag
+        FROM messages m
+        LEFT JOIN customers c ON c.phone=m.from_number
+        WHERE (m.closed IS NULL OR m.closed=0)
+        GROUP BY m.from_number
+        ORDER BY last_ts DESC
+        LIMIT 50
+      `;
+      const { results } = await env.DB.prepare(sql).all();
+      return withCORS(Response.json(results));
+    }
+
+    // --- API: List closed chats ---
+    if (url.pathname === "/api/closed-chats" && request.method === "GET") {
+      const sql = `
+        SELECT
+          m.from_number,
+          c.name, c.email, c.customer_id,
+          MAX(m.timestamp) AS last_ts,
+          (SELECT body FROM messages m2
+             WHERE m2.from_number=m.from_number
+             ORDER BY m2.timestamp DESC LIMIT 1) AS last_message
+        FROM messages m
+        LEFT JOIN customers c ON c.phone=m.from_number
+        WHERE m.closed=1
+        GROUP BY m.from_number
+        ORDER BY last_ts DESC
+        LIMIT 50
+      `;
+      const { results } = await env.DB.prepare(sql).all();
+      return withCORS(Response.json(results));
+    }
+
+    // --- API: List messages in a chat ---
+    if (url.pathname === "/api/messages" && request.method === "GET") {
+      const phone = url.searchParams.get("phone");
+      if (!phone) return withCORS(new Response("Missing phone", { status: 400 }));
+      const sql = `
+        SELECT id, from_number, body, tag, timestamp, direction, media_url, location_json
+        FROM messages
+        WHERE from_number=?
+        ORDER BY timestamp ASC
+        LIMIT 200
+      `;
+      const { results } = await env.DB.prepare(sql).bind(phone).all();
+      return withCORS(Response.json(results));
+    }
+
+    // --- API: List chat sessions for a customer ---
+    if (url.pathname === "/api/chat-sessions" && request.method === "GET") {
+      const phone = url.searchParams.get("phone");
+      const { results } = await env.DB.prepare(
+        `SELECT id, ticket, department, start_ts, end_ts
+         FROM chatsessions WHERE phone = ? ORDER BY start_ts DESC`
+      ).bind(phone).all();
+      return withCORS(Response.json(results));
+    }
+
+    // --- API: Close a session ---
+    if (url.pathname === "/api/close-session" && request.method === "POST") {
+      const { ticket } = await request.json();
+      if (!ticket) return withCORS(new Response("Missing ticket", { status: 400 }));
       await env.DB.prepare(
-        `INSERT INTO customers (phone, name, customer_id, email, verified)
-         VALUES (?, ?, ?, ?, 1)
-         ON CONFLICT(phone) DO UPDATE SET name=excluded.name, customer_id=excluded.customer_id, email=excluded.email, verified=1`
-      ).bind(phone, name, customer_id, email).run();
+        `UPDATE chatsessions SET end_ts=? WHERE ticket=?`
+      ).bind(Date.now(), ticket).run();
       return withCORS(Response.json({ ok: true }));
     }
 
-    // --- Auto-Replies CRUD ---
+    // --- API: Close a chat (legacy, closes all messages for phone) ---
+    if (url.pathname === "/api/close-chat" && request.method === "POST") {
+      const { phone } = await request.json();
+      if (!phone) return withCORS(new Response("Missing phone", { status: 400 }));
+      // mark closed
+      await env.DB.prepare(`UPDATE messages SET closed=1 WHERE from_number=?`)
+        .bind(phone).run();
+      // auto-notify the client
+      const notice = "This session has been closed. To start a new chat, just say ‘hi’ again.";
+      await sendWhatsAppMessage(phone, notice, env);
+      await env.DB.prepare(
+        `INSERT INTO messages (from_number, body, tag, timestamp, direction)
+         VALUES (?, ?, 'system', ?, 'outgoing')`
+      ).bind(phone, notice, Date.now()).run();
+      return withCORS(Response.json({ ok: true }));
+    }
+
+    // --- API: Admin sends a reply ---
+    if (url.pathname === "/api/send-message" && request.method === "POST") {
+      const { phone, body } = await request.json();
+      if (!phone || !body) return withCORS(new Response("Missing fields", { status: 400 }));
+      await sendWhatsAppMessage(phone, body, env);
+      const ts = Date.now();
+      await env.DB.prepare(
+        `INSERT INTO messages
+           (from_number, body, tag, timestamp, direction, seen)
+         VALUES (?, ?, 'outgoing', ?, 'outgoing', 1)`
+      ).bind(phone, body, ts).run();
+      return withCORS(Response.json({ ok: true }));
+    }
+
+    // --- API: Set a message/chat tag manually ---
+    if (url.pathname === "/api/set-tag" && request.method === "POST") {
+      const { from_number, tag } = await request.json();
+      if (!from_number || !tag) return withCORS(new Response("Missing fields", { status: 400 }));
+      await env.DB.prepare(`UPDATE messages SET tag=? WHERE from_number=?`)
+        .bind(tag, from_number).run();
+      return withCORS(Response.json({ ok: true }));
+    }
+
+    // --- API: Update customer & mark verified ---
+    if (url.pathname === "/api/update-customer" && request.method === "POST") {
+      const { phone, name, customer_id, email } = await request.json();
+      if (!phone) return withCORS(new Response("Missing phone", { status: 400 }));
+      await env.DB.prepare(`
+        INSERT INTO customers (phone, name, customer_id, email, verified)
+        VALUES (?, ?, ?, ?, 1)
+        ON CONFLICT(phone) DO UPDATE SET
+          name=excluded.name,
+          customer_id=excluded.customer_id,
+          email=excluded.email,
+          verified=1
+      `).bind(phone, name, customer_id, email).run();
+      return withCORS(Response.json({ ok: true }));
+    }
+
+    // --- API: GET customers (for Send Message page) ---
+    if (url.pathname === "/api/customers" && request.method === "GET") {
+      const { results } = await env.DB.prepare(
+        `SELECT phone, name, customer_id, email
+           FROM customers
+          ORDER BY name`
+      ).all();
+      return withCORS(Response.json(results));
+    }
+
+    // --- API: Add customer (for Send Message page) ---
+    if (url.pathname === "/api/add-customer" && request.method === "POST") {
+      const { phone, name, customer_id, email } = await request.json();
+      if (!phone || !name) return withCORS(new Response("Missing fields", { status: 400 }));
+      await env.DB.prepare(`
+        INSERT OR IGNORE INTO customers (phone, name, customer_id, email, verified)
+        VALUES (?, ?, ?, ?, 1)
+      `).bind(phone, name, customer_id||'', email||'').run();
+      return withCORS(Response.json({ ok: true }));
+    }
+
+    // --- API: Auto-Replies CRUD ---
     if (url.pathname === "/api/auto-replies" && request.method === "GET") {
       const { results } = await env.DB.prepare(`SELECT * FROM auto_replies`).all();
-      return withCORS(Response.json(results));
+      return Response.json(results);
     }
     if (url.pathname === "/api/auto-reply" && request.method === "POST") {
       const { id, tag, hours, reply } = await request.json();
@@ -208,16 +378,160 @@ export default {
           `INSERT INTO auto_replies (tag, hours, reply) VALUES (?, ?, ?)`
         ).bind(tag, hours, reply).run();
       }
-      return withCORS(Response.json({ ok: true }));
+      return Response.json({ ok: true });
     }
     if (url.pathname === "/api/auto-reply-delete" && request.method === "POST") {
       const { id } = await request.json();
       if (!id) return new Response("Missing id", { status: 400 });
       await env.DB.prepare(`DELETE FROM auto_replies WHERE id=?`).bind(id).run();
+      return Response.json({ ok: true });
+    }
+
+    // --- API: Departmental chat lists (Support, Accounts, Sales) ---
+    if (url.pathname === "/api/support-chatsessions" && request.method === "GET") {
+      const sql = `
+        SELECT cs.*, c.name, c.customer_id
+        FROM chatsessions cs
+        LEFT JOIN customers c ON c.phone = cs.phone
+        WHERE cs.department = 'support' AND cs.end_ts IS NULL
+        ORDER BY cs.start_ts DESC
+      `;
+      const { results } = await env.DB.prepare(sql).all();
+      return withCORS(Response.json(results));
+    }
+    if (url.pathname === "/api/accounts-chatsessions" && request.method === "GET") {
+      const sql = `
+        SELECT cs.*, c.name, c.customer_id
+        FROM chatsessions cs
+        LEFT JOIN customers c ON c.phone = cs.phone
+        WHERE cs.department = 'accounts' AND cs.end_ts IS NULL
+        ORDER BY cs.start_ts DESC
+      `;
+      const { results } = await env.DB.prepare(sql).all();
+      return withCORS(Response.json(results));
+    }
+    if (url.pathname === "/api/sales-chatsessions" && request.method === "GET") {
+      const sql = `
+        SELECT cs.*, c.name, c.customer_id
+        FROM chatsessions cs
+        LEFT JOIN customers c ON c.phone = cs.phone
+        WHERE cs.department = 'sales' AND cs.end_ts IS NULL
+        ORDER BY cs.start_ts DESC
+      `;
+      const { results } = await env.DB.prepare(sql).all();
+      return withCORS(Response.json(results));
+    }
+
+    // --- API: Unlinked / Unverified clients ---
+    if (url.pathname === "/api/unlinked-clients" && request.method === "GET") {
+      const sql = `
+        SELECT m.from_number,
+               MAX(m.timestamp) AS last_msg,
+               COALESCE(c.name,'')  AS name,
+               COALESCE(c.email,'') AS email
+        FROM messages m
+        LEFT JOIN customers c ON m.from_number=c.phone
+        WHERE m.tag='unverified'
+          AND (c.verified IS NULL OR c.verified=0 OR c.customer_id IS NULL OR c.customer_id='')
+        GROUP BY m.from_number
+        ORDER BY last_msg DESC
+        LIMIT 200
+      `;
+      try {
+        const { results } = await env.DB.prepare(sql).all();
+        return withCORS(Response.json(results));
+      } catch {
+        return withCORS(new Response("DB error", { status: 500 }));
+      }
+    }
+
+    // --- API: Sync customers from messages ---
+    if (url.pathname === "/api/customers-sync" && request.method === "POST") {
+      const syncSql = `
+        INSERT OR IGNORE INTO customers (phone, name, email, verified)
+        SELECT DISTINCT from_number, '', '', 0
+          FROM messages
+         WHERE from_number NOT IN (SELECT phone FROM customers)
+      `;
+      await env.DB.prepare(syncSql).run();
+      return withCORS(Response.json({ ok: true, message: "Synced." }));
+    }
+
+    // --- API: Admin users (admins table) ---
+    if (url.pathname === "/api/users" && request.method === "GET") {
+      const { results } = await env.DB.prepare(
+        `SELECT id, username, role FROM admins ORDER BY username`
+      ).all();
+      return withCORS(Response.json(results));
+    }
+    if (url.pathname === "/api/add-user" && request.method === "POST") {
+      const { username, password, role } = await request.json();
+      if (!username || !password || !role)
+        return withCORS(new Response("Missing fields", { status: 400 }));
+      await env.DB.prepare(
+        `INSERT INTO admins (username, password, role) VALUES (?, ?, ?)`
+      ).bind(username, password, role).run();
+      return withCORS(Response.json({ ok: true }));
+    }
+    if (url.pathname === "/api/delete-user" && request.method === "POST") {
+      const { id } = await request.json();
+      if (!id) return withCORS(new Response("Missing user id", { status: 400 }));
+      await env.DB.prepare(`DELETE FROM admins WHERE id=?`).bind(id).run();
       return withCORS(Response.json({ ok: true }));
     }
 
-    // --- System/Flow endpoints ---
+    // --- API: Office hours ---
+    if (url.pathname === "/api/office-hours" && request.method === "GET") {
+      const { results } = await env.DB.prepare(`SELECT * FROM office_hours`).all();
+      return withCORS(Response.json(results));
+    }
+    if (url.pathname === "/api/office-hours" && request.method === "POST") {
+      const { tag, day, open_time, close_time, closed } = await request.json();
+      if (typeof tag !== "string" || typeof day !== "number")
+        return withCORS(new Response("Missing fields", { status: 400 }));
+      await env.DB.prepare(`
+        INSERT INTO office_hours (tag, day, open_time, close_time, closed)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(tag, day) DO UPDATE SET
+          open_time = excluded.open_time,
+          close_time = excluded.close_time,
+          closed    = excluded.closed
+      `).bind(tag, day, open_time, close_time, closed ? 1 : 0).run();
+      return withCORS(Response.json({ ok: true }));
+    }
+
+    // --- API: Global office open/close ---
+    if (url.pathname === "/api/office-global" && request.method === "GET") {
+      const { results } = await env.DB.prepare(`SELECT * FROM office_global LIMIT 1`).all();
+      return withCORS(Response.json(results[0] || { closed: 0, message: "" }));
+    }
+    if (url.pathname === "/api/office-global" && request.method === "POST") {
+      const { closed, message } = await request.json();
+      await env.DB.prepare(
+        `UPDATE office_global SET closed = ?, message = ? WHERE id = 1`
+      ).bind(closed ? 1 : 0, message || "").run();
+      return withCORS(Response.json({ ok: true }));
+    }
+
+    // --- API: Public holidays ---
+    if (url.pathname === "/api/public-holidays" && request.method === "GET") {
+      const { results } = await env.DB.prepare(`SELECT * FROM public_holidays ORDER BY date`).all();
+      return withCORS(Response.json(results));
+    }
+    if (url.pathname === "/api/public-holidays" && request.method === "POST") {
+      const { date, name } = await request.json();
+      await env.DB.prepare(
+        `INSERT INTO public_holidays (date, name) VALUES (?, ?)`
+      ).bind(date, name).run();
+      return withCORS(Response.json({ ok: true }));
+    }
+    if (url.pathname === "/api/public-holidays/delete" && request.method === "POST") {
+      const { id } = await request.json();
+      await env.DB.prepare(`DELETE FROM public_holidays WHERE id = ?`).bind(id).run();
+      return withCORS(Response.json({ ok: true }));
+    }
+
+    // --- API: Flows CRUD ---
     if (url.pathname === "/api/flows" && request.method === "GET") {
       const { results } = await env.DB.prepare(`SELECT * FROM flows ORDER BY id`).all();
       return withCORS(Response.json(results));
@@ -244,7 +558,8 @@ export default {
       await env.DB.prepare(`DELETE FROM flows WHERE id = ?`).bind(id).run();
       return withCORS(Response.json({ ok: true }));
     }
-    // Flow-Steps CRUD
+
+    // --- API: Flow-Steps CRUD ---
     if (url.pathname === "/api/flow-steps" && request.method === "GET") {
       const flowId = Number(url.searchParams.get("flow_id") || 0);
       if (!flowId) return withCORS(new Response("Missing flow_id", { status: 400 }));
@@ -277,212 +592,7 @@ export default {
       return withCORS(Response.json({ ok: true }));
     }
 
-    // --- Office Hours & Holidays ---
-    if (url.pathname === "/api/office-hours" && request.method === "GET") {
-      const { results } = await env.DB.prepare(`SELECT * FROM office_hours`).all();
-      return withCORS(Response.json(results));
-    }
-    if (url.pathname === "/api/office-hours" && request.method === "POST") {
-      const { tag, day, open_time, close_time, closed } = await request.json();
-      if (typeof tag !== "string" || typeof day !== "number")
-        return withCORS(new Response("Missing fields", { status: 400 }));
-      await env.DB.prepare(`
-        INSERT INTO office_hours (tag, day, open_time, close_time, closed)
-        VALUES (?, ?, ?, ?, ?)
-        ON CONFLICT(tag, day) DO UPDATE SET
-          open_time = excluded.open_time,
-          close_time = excluded.close_time,
-          closed    = excluded.closed
-      `).bind(tag, day, open_time, close_time, closed ? 1 : 0).run();
-      return withCORS(Response.json({ ok: true }));
-    }
-    if (url.pathname === "/api/office-global" && request.method === "GET") {
-      const { results } = await env.DB.prepare(`SELECT * FROM office_global LIMIT 1`).all();
-      return withCORS(Response.json(results[0] || { closed: 0, message: "" }));
-    }
-    if (url.pathname === "/api/office-global" && request.method === "POST") {
-      const { closed, message } = await request.json();
-      await env.DB.prepare(
-        `UPDATE office_global SET closed = ?, message = ? WHERE id = 1`
-      ).bind(closed ? 1 : 0, message || "").run();
-      return withCORS(Response.json({ ok: true }));
-    }
-    if (url.pathname === "/api/public-holidays" && request.method === "GET") {
-      const { results } = await env.DB.prepare(`SELECT * FROM public_holidays ORDER BY date`).all();
-      return withCORS(Response.json(results));
-    }
-    if (url.pathname === "/api/public-holidays" && request.method === "POST") {
-      const { date, name } = await request.json();
-      await env.DB.prepare(
-        `INSERT INTO public_holidays (date, name) VALUES (?, ?)`
-      ).bind(date, name).run();
-      return withCORS(Response.json({ ok: true }));
-    }
-    if (url.pathname === "/api/public-holidays/delete" && request.method === "POST") {
-      const { id } = await request.json();
-      await env.DB.prepare(`DELETE FROM public_holidays WHERE id = ?`).bind(id).run();
-      return withCORS(Response.json({ ok: true }));
-    }
-
-    // --- Admin users (admins table) ---
-    if (url.pathname === "/api/users" && request.method === "GET") {
-      const { results } = await env.DB.prepare(
-        `SELECT id, username, role FROM admins ORDER BY username`
-      ).all();
-      return withCORS(Response.json(results));
-    }
-    if (url.pathname === "/api/add-user" && request.method === "POST") {
-      const { username, password, role } = await request.json();
-      if (!username || !password || !role)
-        return withCORS(new Response("Missing fields", { status: 400 }));
-      await env.DB.prepare(
-        `INSERT INTO admins (username, password, role) VALUES (?, ?, ?)`
-      ).bind(username, password, role).run();
-      return withCORS(Response.json({ ok: true }));
-    }
-    if (url.pathname === "/api/delete-user" && request.method === "POST") {
-      const { id } = await request.json();
-      if (!id) return withCORS(new Response("Missing user id", { status: 400 }));
-      await env.DB.prepare(`DELETE FROM admins WHERE id=?`).bind(id).run();
-      return withCORS(Response.json({ ok: true }));
-    }
-
-    // --- Departmental Chat Sessions ---
-    if (url.pathname === "/api/accounts-chatsessions" && request.method === "GET") {
-      // all open account department sessions
-      const { results } = await env.DB.prepare(
-        `SELECT s.ticket, s.phone, c.name, c.customer_id, s.department, s.start_ts, s.end_ts
-           FROM chatsessions s
-           LEFT JOIN customers c ON s.phone=c.phone
-          WHERE s.department='accounts' AND s.end_ts IS NULL
-          ORDER BY s.start_ts DESC`
-      ).all();
-      return withCORS(Response.json(results));
-    }
-    if (url.pathname === "/api/support-chatsessions" && request.method === "GET") {
-      // all open support sessions
-      const { results } = await env.DB.prepare(
-        `SELECT s.ticket, s.phone, c.name, c.customer_id, s.department, s.start_ts, s.end_ts
-           FROM chatsessions s
-           LEFT JOIN customers c ON s.phone=c.phone
-          WHERE s.department='support' AND s.end_ts IS NULL
-          ORDER BY s.start_ts DESC`
-      ).all();
-      return withCORS(Response.json(results));
-    }
-    if (url.pathname === "/api/sales-chatsessions" && request.method === "GET") {
-      // all open sales sessions
-      const { results } = await env.DB.prepare(
-        `SELECT s.ticket, s.phone, c.name, c.customer_id, s.department, s.start_ts, s.end_ts
-           FROM chatsessions s
-           LEFT JOIN customers c ON s.phone=c.phone
-          WHERE s.department='sales' AND s.end_ts IS NULL
-          ORDER BY s.start_ts DESC`
-      ).all();
-      return withCORS(Response.json(results));
-    }
-
-    // --- All customers with sessions, for AllChatsPage ---
-    if (url.pathname === "/api/all-customers-with-sessions" && request.method === "GET") {
-      const { results } = await env.DB.prepare(`
-        SELECT c.phone, c.name, c.customer_id,
-          COUNT(s.id) AS session_count
-        FROM customers c
-        LEFT JOIN chatsessions s ON s.phone = c.phone
-        GROUP BY c.phone
-        ORDER BY c.name
-      `).all();
-      return withCORS(Response.json(results));
-    }
-
-    // --- Chat sessions for a customer ---
-    if (url.pathname === "/api/chat-sessions" && request.method === "GET") {
-      const phone = url.searchParams.get("phone");
-      const { results } = await env.DB.prepare(
-        `SELECT id, ticket, department, start_ts, end_ts
-         FROM chatsessions WHERE phone = ? ORDER BY start_ts DESC`
-      ).bind(phone).all();
-      return withCORS(Response.json(results));
-    }
-
-    // --- Messages for a phone (all), filtered in frontend by session ---
-    if (url.pathname === "/api/messages" && request.method === "GET") {
-      const phone = url.searchParams.get("phone");
-      if (!phone) return withCORS(new Response("Missing phone", { status: 400 }));
-      const sql = `
-        SELECT id, from_number, body, tag, timestamp, direction, media_url, location_json
-        FROM messages
-        WHERE from_number=?
-        ORDER BY timestamp ASC
-        LIMIT 500
-      `;
-      const { results } = await env.DB.prepare(sql).bind(phone).all();
-      return withCORS(Response.json(results));
-    }
-
-    // --- Send reply/message (admin action) ---
-    if (url.pathname === "/api/send-message" && request.method === "POST") {
-      const { phone, body } = await request.json();
-      if (!phone || !body) return withCORS(new Response("Missing fields", { status: 400 }));
-      await sendWhatsAppMessage(phone, body, env);
-      const ts = Date.now();
-      await env.DB.prepare(
-        `INSERT INTO messages
-           (from_number, body, tag, timestamp, direction, seen)
-         VALUES (?, ?, 'outgoing', ?, 'outgoing', 1)`
-      ).bind(phone, body, ts).run();
-      return withCORS(Response.json({ ok: true }));
-    }
-
-    // --- Close a chat session by ticket ---
-    if (url.pathname === "/api/close-session" && request.method === "POST") {
-      const { ticket } = await request.json();
-      if (!ticket) return withCORS(new Response("Missing ticket", { status: 400 }));
-      // Close session
-      await env.DB.prepare(
-        `UPDATE chatsessions SET end_ts = ? WHERE ticket = ?`
-      ).bind(Date.now(), ticket).run();
-      // Also close all messages in that session (optional)
-      // Optionally notify user handled on frontend
-      return withCORS(Response.json({ ok: true }));
-    }
-
-    // --- Unlinked / Unverified clients ---
-    if (url.pathname === "/api/unlinked-clients" && request.method === "GET") {
-      const sql = `
-        SELECT m.from_number,
-               MAX(m.timestamp) AS last_msg,
-               COALESCE(c.name,'')  AS name,
-               COALESCE(c.email,'') AS email
-        FROM messages m
-        LEFT JOIN customers c ON m.from_number=c.phone
-        WHERE m.tag='unverified'
-          AND (c.verified IS NULL OR c.verified=0 OR c.customer_id IS NULL OR c.customer_id='')
-        GROUP BY m.from_number
-        ORDER BY last_msg DESC
-        LIMIT 200
-      `;
-      try {
-        const { results } = await env.DB.prepare(sql).all();
-        return withCORS(Response.json(results));
-      } catch {
-        return withCORS(new Response("DB error", { status: 500 }));
-      }
-    }
-
-    // --- Sync customers from messages (utility) ---
-    if (url.pathname === "/api/customers-sync" && request.method === "POST") {
-      const syncSql = `
-        INSERT OR IGNORE INTO customers (phone, name, email, verified)
-        SELECT DISTINCT from_number, '', '', 0
-          FROM messages
-         WHERE from_number NOT IN (SELECT phone FROM customers)
-      `;
-      await env.DB.prepare(syncSql).run();
-      return withCORS(Response.json({ ok: true, message: "Synced." }));
-    }
-
-    // --- Fallback: Serve static HTML (dashboard SPA) ---
+    // --- Serve static HTML (dashboard SPA) ---
     if (url.pathname === "/" || url.pathname === "/index.html") {
       if (env.ASSETS) {
         return env.ASSETS.fetch(new Request(url.origin + '/index.html'));
@@ -490,7 +600,7 @@ export default {
       return new Response("Dashboard static assets missing", { status: 404 });
     }
 
-    // --- Not found ---
+    // --- Fallback ---
     return new Response("Not found", { status: 404 });
   }
 };
