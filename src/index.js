@@ -222,6 +222,26 @@ export default {
       return withCORS(Response.json(results));
     }
 
+// --- API: All customers with session counts ---
+if (url.pathname === "/api/all-customers-with-sessions" && request.method === "GET") {
+  const sql = `
+    SELECT
+      c.phone,
+      c.name,
+      c.customer_id,
+      COUNT(s.id) AS session_count,
+      MAX(s.start_ts) AS last_session_ts
+    FROM customers c
+    LEFT JOIN chatsessions s ON s.phone = c.phone
+    GROUP BY c.phone
+    ORDER BY last_session_ts DESC
+    LIMIT 200
+  `;
+  const { results } = await env.DB.prepare(sql).all();
+  return withCORS(Response.json(results));
+}
+
+    
     // --- API: List messages in a chat ---
     if (url.pathname === "/api/messages" && request.method === "GET") {
       const phone = url.searchParams.get("phone");
