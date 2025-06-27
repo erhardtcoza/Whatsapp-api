@@ -303,6 +303,17 @@ export default {
       return withCORS(Response.json(results));
     }
 
+// GET /api/chat-sessions?phone=…
+if (url.pathname === "/api/chat-sessions" && request.method === "GET") {
+  const phone = url.searchParams.get("phone");
+  const { results } = await env.DB.prepare(
+    `SELECT id, ticket, department, start_ts, end_ts
+       FROM chatsessions WHERE phone = ? ORDER BY start_ts DESC`
+  ).bind(phone).all();
+  return withCORS(Response.json(results));
+}
+
+    
     // --- API: Auto-Replies CRUD ---
     if (url.pathname === "/api/auto-replies" && request.method === "GET") {
       const { results } = await env.DB.prepare(`SELECT * FROM auto_replies`).all();
