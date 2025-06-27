@@ -202,6 +202,18 @@ export default {
       return withCORS(Response.json(results));
     }
 
+// --- GET all customers for “Send Message” dropdown ---
+if (url.pathname === "/api/customers" && request.method === "GET") {
+  const { results } = await env.DB
+    .prepare(`SELECT phone      AS from_number,
+                     name,
+                     customer_id
+                FROM customers
+               ORDER BY customer_id`)
+    .all();
+  return withCORS(Response.json(results));
+}
+    
     // --- List messages in a chat ---
     if (url.pathname === "/api/messages" && request.method === "GET") {
       const phone = url.searchParams.get("phone");
