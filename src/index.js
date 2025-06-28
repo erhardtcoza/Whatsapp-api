@@ -428,6 +428,13 @@ if (url.pathname === "/api/leads" && request.method === "GET") {
   return withCORS(Response.json(results));
 }
 
+    if (url.pathname === "/api/lead-contacted" && request.method === "POST") {
+  const { id } = await request.json();
+  if (!id) return withCORS(new Response("Missing id", { status: 400 }));
+  await env.DB.prepare(`UPDATE leads SET status='contacted' WHERE id=?`).bind(id).run();
+  return withCORS(Response.json({ ok: true }));
+}
+
     
     // --- API: Auto-Replies CRUD ---
     if (url.pathname === "/api/auto-replies" && request.method === "GET") {
