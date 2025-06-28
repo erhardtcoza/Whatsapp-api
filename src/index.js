@@ -432,6 +432,25 @@ if (url.pathname === "/api/sales-chatsessions" && request.method === "GET") {
   return withCORS(Response.json(results));
 }
 
+// --- API: Close a session by ticket ---
+if (url.pathname === "/api/close-session" && request.method === "POST") {
+  const { ticket } = await request.json();
+  if (!ticket) return withCORS(new Response("Missing ticket", { status: 400 }));
+  // Set end_ts for the session to now
+  await env.DB.prepare(`UPDATE chatsessions SET end_ts = ? WHERE ticket = ?`)
+    .bind(Date.now(), ticket).run();
+  // Optionally notify the user
+  const sess = await env.DB.prepare(`SELECT phone FROM chatsessions WHERE ticket = ?`).bind(ticket).first();
+  if (sess && sess.phone) {
+    await sendWhatsAppMessage(sess.phone, "This chat session has been closed. To start a new one, just say hi!", env);
+    await env.DB.prepare(
+      `INSERT INTO messages (from_number, body, tag, timestamp, direction)
+       VALUES (?, ?, 'system', ?, 'outgoing')`
+    ).bind(sess.phone, "This chat session has been closed. To start a new one, just say hi!", Date.now()).run();
+  }
+  return withCORS(Response.json({ ok: true }));
+}
+
     
     // --- API: Close a chat ---
     if (url.pathname === "/api/close-chat" && request.method === "POST") {
