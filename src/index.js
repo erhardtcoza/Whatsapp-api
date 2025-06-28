@@ -805,6 +805,46 @@ if (url.pathname === "/api/close-session" && request.method === "POST") {
       return withCORS(Response.json({ ok: true }));
     }
 
+// List all templates
+if (url.pathname === "/api/templates" && request.method === "GET") {
+  const { results } = await env.DB.prepare(
+    "SELECT * FROM templates ORDER BY id DESC"
+  ).all();
+  return withCORS(Response.json(results));
+}
+
+// Add or update template
+if (url.pathname === "/api/templates" && request.method === "POST") {
+  const { id, name, body, language, status } = await request.json();
+  const now = Date.now();
+  if (id) {
+    await env.DB.prepare(
+      `UPDATE templates SET name=?, body=?, language=?, status=?, updated_at=? WHERE id=?`
+    ).bind(name, body, language, status, now, id).run();
+  } else {
+    await env.DB.prepare(
+      `INSERT INTO templates (name, body, language, status, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?)`
+    ).bind(name, body, language, status || "draft", now, now).run();
+  }
+  return withCORS(Response.json({ ok: true }));
+}
+
+// Delete template
+if (url.pathname === "/api/templates/delete" && request.method === "POST") {
+  const { id } = await request.json();
+  await env.DB.prepare("DELETE FROM templates WHERE id=?").bind(id).run();
+  return withCORS(Response.json({ ok: true }));
+}
+
+// Update template status (for submit, approve, reject)
+if (url.pathname === "/api/templates/status" && request.method === "POST") {
+  const { id, status } = await request.json();
+  await env.DB.prepare("UPDATE templates SET status=? WHERE id=?").bind(status, id).run();
+  return withCORS(Response.json({ ok: true }));
+}
+
+    
     // --- Serve static HTML (dashboard SPA) ---
     if (url.pathname === "/" || url.pathname === "/index.html") {
       if (env.ASSETS) {
