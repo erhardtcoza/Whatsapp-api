@@ -366,6 +366,72 @@ if (url.pathname === "/api/all-customers-with-sessions" && request.method === "G
   return withCORS(Response.json(results));
 }
 
+    // --- API: List open support sessions (for SupportPage) ---
+if (url.pathname === "/api/support-chatsessions" && request.method === "GET") {
+  const sql = `
+    SELECT
+      s.ticket,
+      s.phone,
+      c.name,
+      c.customer_id,
+      s.department,
+      s.start_ts,
+      s.end_ts
+    FROM chatsessions s
+    LEFT JOIN customers c ON c.phone = s.phone
+    WHERE s.department = 'support'
+      AND (s.end_ts IS NULL)
+    ORDER BY s.start_ts DESC
+    LIMIT 200
+  `;
+  const { results } = await env.DB.prepare(sql).all();
+  return withCORS(Response.json(results));
+}
+
+    // --- API: List open accounts sessions (for AccountsPage) ---
+if (url.pathname === "/api/accounts-chatsessions" && request.method === "GET") {
+  const sql = `
+    SELECT
+      s.ticket,
+      s.phone,
+      c.name,
+      c.customer_id,
+      s.department,
+      s.start_ts,
+      s.end_ts
+    FROM chatsessions s
+    LEFT JOIN customers c ON c.phone = s.phone
+    WHERE s.department = 'accounts'
+      AND (s.end_ts IS NULL)
+    ORDER BY s.start_ts DESC
+    LIMIT 200
+  `;
+  const { results } = await env.DB.prepare(sql).all();
+  return withCORS(Response.json(results));
+}
+
+    // --- API: List open sales sessions (for SalesPage) ---
+if (url.pathname === "/api/sales-chatsessions" && request.method === "GET") {
+  const sql = `
+    SELECT
+      s.ticket,
+      s.phone,
+      c.name,
+      c.customer_id,
+      s.department,
+      s.start_ts,
+      s.end_ts
+    FROM chatsessions s
+    LEFT JOIN customers c ON c.phone = s.phone
+    WHERE s.department = 'sales'
+      AND (s.end_ts IS NULL)
+    ORDER BY s.start_ts DESC
+    LIMIT 200
+  `;
+  const { results } = await env.DB.prepare(sql).all();
+  return withCORS(Response.json(results));
+}
+
     
     // --- API: Close a chat ---
     if (url.pathname === "/api/close-chat" && request.method === "POST") {
