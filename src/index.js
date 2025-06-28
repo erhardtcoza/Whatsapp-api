@@ -43,25 +43,30 @@ export default {
       let   location_json = null;
 
       // Parse incoming message of any type, and store media if needed
-      const type = msgObj.type;
-      if (type === "text") {
-        userInput = msgObj.text.body.trim();
-      } else if (type === "image") {
-        userInput = "[Image]";
-        media_url = msgObj.image?.url || null;
+const type = msgObj.type;
+if (type === "text") {
+  userInput = msgObj.text.body.trim();
+} else if (type === "image") {
+  userInput = "[Image]";
+  const mediaId = msgObj.image?.id;
+  if (mediaId && env.R2_BUCKET) {
+    const mediaApi = `https://graph.facebook.com/v19.0/${mediaId}`;
+    const mediaMeta = await fetch(mediaApi, {
+      headers: { Authorization: `Bearer ${env.WHATSAPP_TOKEN}` }
+    }).then(r => r.json());
+    const directUrl = mediaMeta.url;
 
-        // --- Optional: Download and store image in R2 ---
-        // if (media_url && env.R2_BUCKET) {
-        //   const imageRes = await fetch(media_url, { headers: { Authorization: `Bearer ${env.WHATSAPP_TOKEN}` } });
-        //   if (imageRes.ok) {
-        //     const buf = await imageRes.arrayBuffer();
-        //     const r2key = `wa-img/${from}-${now}.jpg`;
-        //     await env.R2_BUCKET.put(r2key, buf);
-        //     media_url = `https://w-image.vinetdns.co.za/${r2key}`;
-        //   }
-        // }
-      } else if (type === "audio") {
-        if (msgObj.audio?.voice) {
+    const imageRes = await fetch(directUrl, {
+      headers: { Authorization: `Bearer ${env.WHATSAPP_TOKEN}` }
+    });
+    if (imageRes.ok) {
+      const buf = await imageRes.arrayBuffer();
+      const r2key = `wa-img/${from}-${now}.jpg`;
+      await env.R2_BUCKET.put(r2key, buf);
+      media_url = `https://w-image.vinetdns.co.za/${r2key}`;
+    }
+  }
+} else if (type === "audio") {
           const autoReply = "Sorry, but we cannot receive voice notes. Please send text or documents.";
           await sendWhatsAppMessage(from, autoReply, env);
           await env.DB.prepare(
