@@ -361,19 +361,33 @@ export default {
       return withCORS(Response.json({ ok: true }));
     }
 
-    // --- API: Admin sends a reply ---
-    if (url.pathname === "/api/send-message" && request.method === "POST") {
-      const { phone, body } = await request.json();
-      if (!phone || !body) return withCORS(new Response("Missing fields", { status: 400 }));
-      await sendWhatsAppMessage(phone, body, env);
-      const ts = Date.now();
-      await env.DB.prepare(
-        `INSERT INTO messages
-           (from_number, body, tag, timestamp, direction, seen)
-         VALUES (?, ?, 'outgoing', ?, 'outgoing', 1)`
-      ).bind(phone, body, ts).run();
-      return withCORS(Response.json({ ok: true }));
-    }
+    // Save/Edit/Verify client
+if (url.pathname === "/api/verify-client" && request.method === "POST") {
+  const { phone, name, email, customer_id } = await request.json();
+  await env.DB.prepare(`
+    UPDATE customers SET name=?, email=?, customer_id=?, verified=1 WHERE phone=?
+  `).bind(name, email, customer_id, phone).run();
+  return withCORS(Response.json({ ok: true }));
+}
+
+// Send message to client
+if (url.pathname === "/api/send-message" && request.method === "POST") {
+  const { phone, body } = await request.json();
+  await sendWhatsAppMessage(phone, body, env);
+  await env.DB.prepare(
+    `INSERT INTO messages (from_number, body, tag, timestamp, direction)
+     VALUES (?, ?, 'system', ?, 'outgoing')`
+  ).bind(phone, body, Date.now()).run();
+  return withCORS(Response.json({ ok: true }));
+}
+
+// Delete client
+if (url.pathname === "/api/delete-client" && request.method === "POST") {
+  const { phone } = await request.json();
+  await env.DB.prepare(`DELETE FROM customers WHERE phone=?`).bind(phone).run();
+  return withCORS(Response.json({ ok: true }));
+}
+
 
     // --- API: Set a message/chat tag manually ---
     if (url.pathname === "/api/set-tag" && request.method === "POST") {
