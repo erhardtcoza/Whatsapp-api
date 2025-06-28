@@ -11,20 +11,6 @@ function withCORS(resp) {
   return resp;
 }
 
-// --- Helper to fetch and store WhatsApp media in R2, then return public URL ---
-async function fetchAndStoreMedia(mediaUrl, env, key) {
-  if (!mediaUrl) return null;
-  // Download image from WhatsApp
-  const waRes = await fetch(mediaUrl, {
-    headers: { Authorization: `Bearer ${env.WHATSAPP_TOKEN}` }
-  });
-  if (!waRes.ok) return null;
-  const buf = await waRes.arrayBuffer();
-  await env.R2.put(key, buf);
-  // Construct your public URL (replace below with your R2 public image URL prefix)
-  return `https://w-image.vinetdns.co.za/${key}`;
-}
-
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -56,17 +42,25 @@ export default {
       let   media_url     = null;
       let   location_json = null;
 
-      // --- Media parsing & R2 storage ---
-      if (msgObj.type === "image") {
+      // Parse incoming message of any type, and store media if needed
+      const type = msgObj.type;
+      if (type === "text") {
+        userInput = msgObj.text.body.trim();
+      } else if (type === "image") {
         userInput = "[Image]";
-        const r2key = `images/${from}_${now}.jpg`;
-        media_url = await fetchAndStoreMedia(msgObj.image?.url, env, r2key);
-      } else if (msgObj.type === "document") {
-        userInput = "[Document]";
-        const ext = msgObj.document?.mime_type?.split("/")[1] || "file";
-        const r2key = `docs/${from}_${now}.${ext}`;
-        media_url = await fetchAndStoreMedia(msgObj.document?.url, env, r2key);
-      } else if (msgObj.type === "audio") {
+        media_url = msgObj.image?.url || null;
+
+        // --- Optional: Download and store image in R2 ---
+        // if (media_url && env.R2_BUCKET) {
+        //   const imageRes = await fetch(media_url, { headers: { Authorization: `Bearer ${env.WHATSAPP_TOKEN}` } });
+        //   if (imageRes.ok) {
+        //     const buf = await imageRes.arrayBuffer();
+        //     const r2key = `wa-img/${from}-${now}.jpg`;
+        //     await env.R2_BUCKET.put(r2key, buf);
+        //     media_url = `https://w-image.vinetdns.co.za/${r2key}`;
+        //   }
+        // }
+      } else if (type === "audio") {
         if (msgObj.audio?.voice) {
           const autoReply = "Sorry, but we cannot receive voice notes. Please send text or documents.";
           await sendWhatsAppMessage(from, autoReply, env);
@@ -85,35 +79,33 @@ export default {
           return Response.json({ ok: true });
         } else {
           userInput = "[Audio]";
-          const r2key = `audio/${from}_${now}.ogg`;
-          media_url = await fetchAndStoreMedia(msgObj.audio?.url, env, r2key);
+          media_url = msgObj.audio?.url || null;
         }
-      } else if (msgObj.type === "location") {
+      } else if (type === "document") {
+        userInput = "[Document]";
+        media_url = msgObj.document?.url || null;
+      } else if (type === "location") {
         userInput     = `[LOCATION: ${msgObj.location.latitude},${msgObj.location.longitude}]`;
         location_json = JSON.stringify(msgObj.location);
-      } else if (msgObj.type === "text") {
-        userInput = msgObj.text.body.trim();
       } else {
-        userInput = `[Unknown: ${msgObj.type}]`;
-        if (msgObj[msgObj.type]?.url) media_url = msgObj[msgObj.type].url;
+        userInput = `[Unknown: ${type}]`;
+        if (msgObj[type]?.url) media_url = msgObj[type].url;
       }
 
-      // --- CUSTOMER LOOKUP ---
-      let customer = await env.DB
-        .prepare(`SELECT * FROM customers WHERE phone = ?`)
-        .bind(from)
-        .first();
+      // Lookup customer in our own table
+      let customer = await env.DB.prepare(`SELECT * FROM customers WHERE phone = ?`).bind(from).first();
 
-      // --- ONBOARDING/LEAD FLOW ---
+      // Onboarding state from DB
       let state = null;
       try {
         let st = await env.DB.prepare(`SELECT * FROM onboarding WHERE phone = ?`).bind(from).first();
         state = st?.step || null;
       } catch { state = null; }
 
+      // --- Onboarding and lead flow ---
       if (!customer || customer.verified !== 1) {
-        // Onboarding: First prompt
         if (!state) {
+          // Start onboarding
           await env.DB.prepare(`INSERT OR IGNORE INTO onboarding (phone, step) VALUES (?, 'init')`).bind(from).run();
           const prompt =
             "Welcome. We want to assist you as effectively and quickly as possible, but we need your information first. Please reply only with the options provided.\nAre you currently a Vinet client? Yes / No";
@@ -125,7 +117,7 @@ export default {
           return Response.json({ ok: true });
         }
 
-        // Onboarding: Yes/No
+        // Waiting for Yes/No reply
         if (state === "init") {
           const ans = userInput.trim().toLowerCase();
           if (ans === "yes") {
@@ -157,7 +149,7 @@ export default {
           }
         }
 
-        // Onboarding: client details (YES)
+        // Onboarding: waiting for client details (yes)
         if (state === "ask_client_details") {
           const parts = userInput.split(",");
           if (parts.length < 3) {
@@ -181,7 +173,7 @@ export default {
           return Response.json({ ok: true });
         }
 
-        // Onboarding: lead details (NO)
+        // Onboarding: waiting for lead details (no)
         if (state === "ask_lead_details") {
           const parts = userInput.split(",");
           if (parts.length < 3) {
@@ -204,12 +196,12 @@ export default {
           return Response.json({ ok: true });
         }
 
-        // Wait for agent verification
+        // Waiting for verification by admin: only check if admin has verified
         if (state === "wait_verify") {
           customer = await env.DB.prepare(`SELECT * FROM customers WHERE phone = ?`).bind(from).first();
           if (customer && customer.verified === 1) {
             await env.DB.prepare(`DELETE FROM onboarding WHERE phone = ?`).bind(from).run();
-            const msg = `Hi, our agents have successfully verified your details. How can we help you?\n1. Support\n2. Sales\n3. Accounts`;
+            const msg = `Hi, you have been verified by our admin team.\nHow can we help you?\n1. Support\n2. Sales\n3. Accounts`;
             await sendWhatsAppMessage(from, msg, env);
             await env.DB.prepare(
               `INSERT INTO messages (from_number, body, tag, timestamp, direction)
@@ -225,7 +217,6 @@ export default {
 
       // --- VERIFIED CUSTOMER FLOW ---
       if (customer && customer.verified === 1) {
-        // 1. Main menu/greeting
         const greetings = ["hi","hello","hey","good day"];
         const lc = userInput.toLowerCase();
         if (greetings.includes(lc)) {
@@ -241,14 +232,13 @@ export default {
           return Response.json({ ok: true });
         }
 
-        // 2. Department selection -> create session
+        // Department choice
         let deptTag = null;
         if (userInput === "1") deptTag = "support";
         else if (userInput === "2") deptTag = "sales";
         else if (userInput === "3") deptTag = "accounts";
 
         if (deptTag) {
-          // Session id as YYYYMMDDxxx
           const today = new Date();
           const yyyymmdd = today.toISOString().slice(0,10).replace(/-/g,"");
           const dayStart = Date.parse(today.toISOString().slice(0,10) + "T00:00:00Z");
@@ -270,32 +260,30 @@ export default {
           return Response.json({ ok: true });
         }
 
-        // 3. If user has open session, append message to correct department
+        // -------------- Main chat messaging --------------
+        // If client has open session, tag the message with department
         const openSession = await env.DB.prepare(
           `SELECT * FROM chatsessions WHERE phone=? AND end_ts IS NULL ORDER BY start_ts DESC LIMIT 1`
         ).bind(from).first();
 
+        let msgTag = "customer";
         if (openSession) {
-          await env.DB.prepare(
-            `INSERT INTO messages (from_number, body, tag, timestamp, direction, media_url, location_json)
-             VALUES (?, ?, ?, ?, 'incoming', ?, ?)`
-          ).bind(from, userInput, openSession.department, now, media_url, location_json).run();
-          return Response.json({ ok: true });
+          msgTag = openSession.department;
         }
 
-        // fallback - treat as menu again
-        const menu =
-          `Hello! How can we help you today?\n1. Support\n2. Sales\n3. Accounts`;
-        await sendWhatsAppMessage(from, menu, env);
+        await env.DB.prepare(
+          `INSERT INTO messages (from_number, body, tag, timestamp, direction, media_url, location_json)
+           VALUES (?, ?, ?, ?, 'incoming', ?, ?)`
+        ).bind(from, userInput, msgTag, now, media_url, location_json).run();
+
         return Response.json({ ok: true });
       }
 
-      // fallback
+      // --- fallback ---
       return Response.json({ ok: true });
     }
 
-    // ---- All API ENDPOINTS BELOW, FULLY EXPANDED ----
-
+    // API endpoints follow below...
     // --- API: List open chats ---
     if (url.pathname === "/api/chats" && request.method === "GET") {
       const sql = `
@@ -363,8 +351,8 @@ export default {
     if (url.pathname === "/api/close-chat" && request.method === "POST") {
       const { phone } = await request.json();
       if (!phone) return withCORS(new Response("Missing phone", { status: 400 }));
-      await env.DB.prepare(`UPDATE messages SET closed=1 WHERE from_number=?`)
-        .bind(phone).run();
+      // mark closed
+      await env.DB.prepare(`UPDATE messages SET closed=1 WHERE from_number=?`).bind(phone).run();
       const notice = "This session has been closed. To start a new chat, just say ‘hi’ again.";
       await sendWhatsAppMessage(phone, notice, env);
       await env.DB.prepare(
@@ -374,34 +362,23 @@ export default {
       return withCORS(Response.json({ ok: true }));
     }
 
-    // --- API: Verify client ---
+    // --- API: Verify client (admin) ---
     if (url.pathname === "/api/verify-client" && request.method === "POST") {
-  const { phone, name, email, customer_id } = await request.json();
-  await env.DB.prepare(`
-    UPDATE customers SET name=?, email=?, customer_id=?, verified=1 WHERE phone=?
-  `).bind(name, email, customer_id, phone).run();
+      const { phone, name, email, customer_id } = await request.json();
+      await env.DB.prepare(`
+        UPDATE customers SET name=?, email=?, customer_id=?, verified=1 WHERE phone=?
+      `).bind(name, email, customer_id, phone).run();
+      // After verify: send client menu
+      const msg = `Hi, you have been verified by our admin team.\nHow can we help you?\n1. Support\n2. Sales\n3. Accounts`;
+      await sendWhatsAppMessage(phone, msg, env);
+      await env.DB.prepare(
+        `INSERT INTO messages (from_number, body, tag, timestamp, direction)
+         VALUES (?, ?, 'system', ?, 'outgoing')`
+      ).bind(phone, msg, Date.now()).run();
+      return withCORS(Response.json({ ok: true }));
+    }
 
-  // After verifying, send WhatsApp message and main menu
-  const message1 = "Hi, you have been verified by our admin team.";
-  const message2 = "How can we help you?\n1. Support\n2. Sales\n3. Accounts";
-  await sendWhatsAppMessage(phone, message1, env);
-  await sendWhatsAppMessage(phone, message2, env);
-  // Log to messages table for audit
-  const now = Date.now();
-  await env.DB.prepare(
-    `INSERT INTO messages (from_number, body, tag, timestamp, direction)
-     VALUES (?, ?, 'system', ?, 'outgoing')`
-  ).bind(phone, message1, now).run();
-  await env.DB.prepare(
-    `INSERT INTO messages (from_number, body, tag, timestamp, direction)
-     VALUES (?, ?, 'system', ?, 'outgoing')`
-  ).bind(phone, message2, now).run();
-
-  return withCORS(Response.json({ ok: true }));
-}
-
-
-    // --- API: Send message to client ---
+    // --- API: Send message to client (admin) ---
     if (url.pathname === "/api/send-message" && request.method === "POST") {
       const { phone, body } = await request.json();
       await sendWhatsAppMessage(phone, body, env);
@@ -419,7 +396,7 @@ export default {
       return withCORS(Response.json({ ok: true }));
     }
 
-    // --- API: Set message tag manually ---
+    // --- API: Set a message/chat tag manually ---
     if (url.pathname === "/api/set-tag" && request.method === "POST") {
       const { from_number, tag } = await request.json();
       if (!from_number || !tag) return withCORS(new Response("Missing fields", { status: 400 }));
@@ -454,7 +431,7 @@ export default {
       return withCORS(Response.json(results));
     }
 
-    // --- API: Chat sessions for a customer ---
+    // --- API: Get sessions for a customer ---
     if (url.pathname === "/api/chat-sessions" && request.method === "GET") {
       const phone = url.searchParams.get("phone");
       const { results } = await env.DB.prepare(
@@ -472,7 +449,6 @@ export default {
       return withCORS(Response.json(results));
     }
 
-    // --- API: Mark lead contacted ---
     if (url.pathname === "/api/lead-contacted" && request.method === "POST") {
       const { id } = await request.json();
       if (!id) return withCORS(new Response("Missing id", { status: 400 }));
