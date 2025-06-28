@@ -11,6 +11,20 @@ function withCORS(resp) {
   return resp;
 }
 
+// --- Helper to fetch and store WhatsApp media in R2, then return public URL ---
+async function fetchAndStoreMedia(mediaUrl, env, key) {
+  if (!mediaUrl) return null;
+  // Download image from WhatsApp
+  const waRes = await fetch(mediaUrl, {
+    headers: { Authorization: `Bearer ${env.WHATSAPP_TOKEN}` }
+  });
+  if (!waRes.ok) return null;
+  const buf = await waRes.arrayBuffer();
+  await env.R2.put(key, buf);
+  // Construct your public URL (replace below with your R2 public image URL prefix)
+  return `https://w-image.vinetdns.co.za/${key}`;
+}
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -42,14 +56,17 @@ export default {
       let   media_url     = null;
       let   location_json = null;
 
-      // Parse incoming message of any type
-      const type = msgObj.type;
-      if (type === "text") {
-        userInput = msgObj.text.body.trim();
-      } else if (type === "image") {
+      // --- Media parsing & R2 storage ---
+      if (msgObj.type === "image") {
         userInput = "[Image]";
-        media_url = msgObj.image?.url || null;
-      } else if (type === "audio") {
+        const r2key = `images/${from}_${now}.jpg`;
+        media_url = await fetchAndStoreMedia(msgObj.image?.url, env, r2key);
+      } else if (msgObj.type === "document") {
+        userInput = "[Document]";
+        const ext = msgObj.document?.mime_type?.split("/")[1] || "file";
+        const r2key = `docs/${from}_${now}.${ext}`;
+        media_url = await fetchAndStoreMedia(msgObj.document?.url, env, r2key);
+      } else if (msgObj.type === "audio") {
         if (msgObj.audio?.voice) {
           const autoReply = "Sorry, but we cannot receive voice notes. Please send text or documents.";
           await sendWhatsAppMessage(from, autoReply, env);
@@ -68,37 +85,35 @@ export default {
           return Response.json({ ok: true });
         } else {
           userInput = "[Audio]";
-          media_url = msgObj.audio?.url || null;
+          const r2key = `audio/${from}_${now}.ogg`;
+          media_url = await fetchAndStoreMedia(msgObj.audio?.url, env, r2key);
         }
-      } else if (type === "document") {
-        userInput = "[Document]";
-        media_url = msgObj.document?.url || null;
-      } else if (type === "location") {
+      } else if (msgObj.type === "location") {
         userInput     = `[LOCATION: ${msgObj.location.latitude},${msgObj.location.longitude}]`;
         location_json = JSON.stringify(msgObj.location);
+      } else if (msgObj.type === "text") {
+        userInput = msgObj.text.body.trim();
       } else {
-        userInput = `[Unknown: ${type}]`;
-        if (msgObj[type]?.url) media_url = msgObj[type].url;
+        userInput = `[Unknown: ${msgObj.type}]`;
+        if (msgObj[msgObj.type]?.url) media_url = msgObj[msgObj.type].url;
       }
 
-      // Lookup customer in our own table
+      // --- CUSTOMER LOOKUP ---
       let customer = await env.DB
         .prepare(`SELECT * FROM customers WHERE phone = ?`)
         .bind(from)
         .first();
 
-      // Check if in onboarding flow (store onboarding status in KV or DB as needed)
-      // Simple in-memory status: Replace this with a KV lookup for persistent state
+      // --- ONBOARDING/LEAD FLOW ---
       let state = null;
       try {
         let st = await env.DB.prepare(`SELECT * FROM onboarding WHERE phone = ?`).bind(from).first();
         state = st?.step || null;
       } catch { state = null; }
 
-      // --- Onboarding and lead flow (simple, no address in customers) ---
       if (!customer || customer.verified !== 1) {
+        // Onboarding: First prompt
         if (!state) {
-          // Start onboarding
           await env.DB.prepare(`INSERT OR IGNORE INTO onboarding (phone, step) VALUES (?, 'init')`).bind(from).run();
           const prompt =
             "Welcome. We want to assist you as effectively and quickly as possible, but we need your information first. Please reply only with the options provided.\nAre you currently a Vinet client? Yes / No";
@@ -110,7 +125,7 @@ export default {
           return Response.json({ ok: true });
         }
 
-        // Waiting for Yes/No reply
+        // Onboarding: Yes/No
         if (state === "init") {
           const ans = userInput.trim().toLowerCase();
           if (ans === "yes") {
@@ -142,9 +157,8 @@ export default {
           }
         }
 
-        // Onboarding: waiting for client details (yes)
+        // Onboarding: client details (YES)
         if (state === "ask_client_details") {
-          // Example: 123456, John Doe, john@example.com
           const parts = userInput.split(",");
           if (parts.length < 3) {
             const msg = "Please provide your Client Code, Full Name, and Email address, separated by commas.";
@@ -152,13 +166,11 @@ export default {
             return Response.json({ ok: true });
           }
           const [customer_id, name, email] = parts.map(x => x.trim());
-          // Add to unverified
           await env.DB.prepare(
             `INSERT INTO customers (phone, customer_id, name, email, verified)
              VALUES (?, ?, ?, ?, 0)
              ON CONFLICT(phone) DO UPDATE SET customer_id=?, name=?, email=?`
           ).bind(from, customer_id, name, email, customer_id, name, email).run();
-          // Mark onboarding as waiting for admin verify
           await env.DB.prepare(`UPDATE onboarding SET step = 'wait_verify' WHERE phone = ?`).bind(from).run();
           const msg = "Thank you. Your details have been received and are pending verification by our agents.";
           await sendWhatsAppMessage(from, msg, env);
@@ -169,9 +181,8 @@ export default {
           return Response.json({ ok: true });
         }
 
-        // Onboarding: waiting for lead details (no)
+        // Onboarding: lead details (NO)
         if (state === "ask_lead_details") {
-          // Example: John Doe, john@example.com, 5 Main Street
           const parts = userInput.split(",");
           if (parts.length < 3) {
             const msg = "Please provide your Full Name, Email, and Address, separated by commas.";
@@ -193,7 +204,7 @@ export default {
           return Response.json({ ok: true });
         }
 
-        // Waiting for verification by admin: only check if admin has verified
+        // Wait for agent verification
         if (state === "wait_verify") {
           customer = await env.DB.prepare(`SELECT * FROM customers WHERE phone = ?`).bind(from).first();
           if (customer && customer.verified === 1) {
@@ -206,7 +217,6 @@ export default {
             ).bind(from, msg, now).run();
             return Response.json({ ok: true });
           }
-          // Otherwise, just ignore or say "waiting for verification"
           const msg = "Your details are pending verification. Please wait for an agent.";
           await sendWhatsAppMessage(from, msg, env);
           return Response.json({ ok: true });
@@ -215,7 +225,7 @@ export default {
 
       // --- VERIFIED CUSTOMER FLOW ---
       if (customer && customer.verified === 1) {
-        // Main menu after verification or onboarding
+        // 1. Main menu/greeting
         const greetings = ["hi","hello","hey","good day"];
         const lc = userInput.toLowerCase();
         if (greetings.includes(lc)) {
@@ -231,14 +241,14 @@ export default {
           return Response.json({ ok: true });
         }
 
-        // Department choice
+        // 2. Department selection -> create session
         let deptTag = null;
         if (userInput === "1") deptTag = "support";
         else if (userInput === "2") deptTag = "sales";
         else if (userInput === "3") deptTag = "accounts";
 
         if (deptTag) {
-          // create a date-based ticket: YYYYMMDDxxx
+          // Session id as YYYYMMDDxxx
           const today = new Date();
           const yyyymmdd = today.toISOString().slice(0,10).replace(/-/g,"");
           const dayStart = Date.parse(today.toISOString().slice(0,10) + "T00:00:00Z");
@@ -260,26 +270,31 @@ export default {
           return Response.json({ ok: true });
         }
 
-        // (Commented out) - Auto replies after department selection
-        // const reply = await routeCommand({ userInput, customer, env });
-        // await sendWhatsAppMessage(from, reply, env);
-        // await env.DB.prepare(
-        //   `INSERT INTO messages (from_number, body, tag, timestamp, direction)
-        //    VALUES (?, ?, ?, ?, 'outgoing')`
-        // ).bind(from, reply, customer.tag||'customer', now).run();
-        // return Response.json({ ok: true });
+        // 3. If user has open session, append message to correct department
+        const openSession = await env.DB.prepare(
+          `SELECT * FROM chatsessions WHERE phone=? AND end_ts IS NULL ORDER BY start_ts DESC LIMIT 1`
+        ).bind(from).first();
 
-        // Just echo for now
-        await env.DB.prepare(
-          `INSERT INTO messages (from_number, body, tag, timestamp, direction)
-           VALUES (?, ?, 'customer', ?, 'incoming')`
-        ).bind(from, userInput, now).run();
+        if (openSession) {
+          await env.DB.prepare(
+            `INSERT INTO messages (from_number, body, tag, timestamp, direction, media_url, location_json)
+             VALUES (?, ?, ?, ?, 'incoming', ?, ?)`
+          ).bind(from, userInput, openSession.department, now, media_url, location_json).run();
+          return Response.json({ ok: true });
+        }
+
+        // fallback - treat as menu again
+        const menu =
+          `Hello! How can we help you today?\n1. Support\n2. Sales\n3. Accounts`;
+        await sendWhatsAppMessage(from, menu, env);
         return Response.json({ ok: true });
       }
 
-      // --- fallback ---
+      // fallback
       return Response.json({ ok: true });
     }
+
+    // ---- All API ENDPOINTS BELOW, FULLY EXPANDED ----
 
     // --- API: List open chats ---
     if (url.pathname === "/api/chats" && request.method === "GET") {
@@ -348,10 +363,8 @@ export default {
     if (url.pathname === "/api/close-chat" && request.method === "POST") {
       const { phone } = await request.json();
       if (!phone) return withCORS(new Response("Missing phone", { status: 400 }));
-      // mark closed
       await env.DB.prepare(`UPDATE messages SET closed=1 WHERE from_number=?`)
         .bind(phone).run();
-      // auto-notify the client
       const notice = "This session has been closed. To start a new chat, just say ‘hi’ again.";
       await sendWhatsAppMessage(phone, notice, env);
       await env.DB.prepare(
@@ -361,35 +374,34 @@ export default {
       return withCORS(Response.json({ ok: true }));
     }
 
-    // Save/Edit/Verify client
-if (url.pathname === "/api/verify-client" && request.method === "POST") {
-  const { phone, name, email, customer_id } = await request.json();
-  await env.DB.prepare(`
-    UPDATE customers SET name=?, email=?, customer_id=?, verified=1 WHERE phone=?
-  `).bind(name, email, customer_id, phone).run();
-  return withCORS(Response.json({ ok: true }));
-}
+    // --- API: Verify client ---
+    if (url.pathname === "/api/verify-client" && request.method === "POST") {
+      const { phone, name, email, customer_id } = await request.json();
+      await env.DB.prepare(`
+        UPDATE customers SET name=?, email=?, customer_id=?, verified=1 WHERE phone=?
+      `).bind(name, email, customer_id, phone).run();
+      return withCORS(Response.json({ ok: true }));
+    }
 
-// Send message to client
-if (url.pathname === "/api/send-message" && request.method === "POST") {
-  const { phone, body } = await request.json();
-  await sendWhatsAppMessage(phone, body, env);
-  await env.DB.prepare(
-    `INSERT INTO messages (from_number, body, tag, timestamp, direction)
-     VALUES (?, ?, 'system', ?, 'outgoing')`
-  ).bind(phone, body, Date.now()).run();
-  return withCORS(Response.json({ ok: true }));
-}
+    // --- API: Send message to client ---
+    if (url.pathname === "/api/send-message" && request.method === "POST") {
+      const { phone, body } = await request.json();
+      await sendWhatsAppMessage(phone, body, env);
+      await env.DB.prepare(
+        `INSERT INTO messages (from_number, body, tag, timestamp, direction)
+         VALUES (?, ?, 'system', ?, 'outgoing')`
+      ).bind(phone, body, Date.now()).run();
+      return withCORS(Response.json({ ok: true }));
+    }
 
-// Delete client
-if (url.pathname === "/api/delete-client" && request.method === "POST") {
-  const { phone } = await request.json();
-  await env.DB.prepare(`DELETE FROM customers WHERE phone=?`).bind(phone).run();
-  return withCORS(Response.json({ ok: true }));
-}
+    // --- API: Delete client ---
+    if (url.pathname === "/api/delete-client" && request.method === "POST") {
+      const { phone } = await request.json();
+      await env.DB.prepare(`DELETE FROM customers WHERE phone=?`).bind(phone).run();
+      return withCORS(Response.json({ ok: true }));
+    }
 
-
-    // --- API: Set a message/chat tag manually ---
+    // --- API: Set message tag manually ---
     if (url.pathname === "/api/set-tag" && request.method === "POST") {
       const { from_number, tag } = await request.json();
       if (!from_number || !tag) return withCORS(new Response("Missing fields", { status: 400 }));
@@ -424,7 +436,7 @@ if (url.pathname === "/api/delete-client" && request.method === "POST") {
       return withCORS(Response.json(results));
     }
 
-    // GET /api/chat-sessions?phone=…
+    // --- API: Chat sessions for a customer ---
     if (url.pathname === "/api/chat-sessions" && request.method === "GET") {
       const phone = url.searchParams.get("phone");
       const { results } = await env.DB.prepare(
@@ -435,21 +447,21 @@ if (url.pathname === "/api/delete-client" && request.method === "POST") {
     }
 
     // --- API: List leads ---
-if (url.pathname === "/api/leads" && request.method === "GET") {
-  const { results } = await env.DB.prepare(
-    `SELECT * FROM leads ORDER BY created_at DESC LIMIT 200`
-  ).all();
-  return withCORS(Response.json(results));
-}
+    if (url.pathname === "/api/leads" && request.method === "GET") {
+      const { results } = await env.DB.prepare(
+        `SELECT * FROM leads ORDER BY created_at DESC LIMIT 200`
+      ).all();
+      return withCORS(Response.json(results));
+    }
 
+    // --- API: Mark lead contacted ---
     if (url.pathname === "/api/lead-contacted" && request.method === "POST") {
-  const { id } = await request.json();
-  if (!id) return withCORS(new Response("Missing id", { status: 400 }));
-  await env.DB.prepare(`UPDATE leads SET status='contacted' WHERE id=?`).bind(id).run();
-  return withCORS(Response.json({ ok: true }));
-}
+      const { id } = await request.json();
+      if (!id) return withCORS(new Response("Missing id", { status: 400 }));
+      await env.DB.prepare(`UPDATE leads SET status='contacted' WHERE id=?`).bind(id).run();
+      return withCORS(Response.json({ ok: true }));
+    }
 
-    
     // --- API: Auto-Replies CRUD ---
     if (url.pathname === "/api/auto-replies" && request.method === "GET") {
       const { results } = await env.DB.prepare(`SELECT * FROM auto_replies`).all();
@@ -530,22 +542,22 @@ if (url.pathname === "/api/leads" && request.method === "GET") {
     }
 
     // --- API: Unlinked / Unverified clients ---
-   if (url.pathname === "/api/unlinked-clients" && request.method === "GET") {
-  const sql = `
-    SELECT
-      c.phone,
-      c.name,
-      c.email,
-      c.customer_id,
-      c.verified
-    FROM customers c
-    WHERE c.verified = 0
-    ORDER BY c.phone DESC
-    LIMIT 200
-  `;
-  const { results } = await env.DB.prepare(sql).all();
-  return withCORS(Response.json(results));
-}
+    if (url.pathname === "/api/unlinked-clients" && request.method === "GET") {
+      const sql = `
+        SELECT
+          c.phone,
+          c.name,
+          c.email,
+          c.customer_id,
+          c.verified
+        FROM customers c
+        WHERE c.verified = 0
+        ORDER BY c.phone DESC
+        LIMIT 200
+      `;
+      const { results } = await env.DB.prepare(sql).all();
+      return withCORS(Response.json(results));
+    }
 
     // --- API: Sync customers from messages ---
     if (url.pathname === "/api/customers-sync" && request.method === "POST") {
