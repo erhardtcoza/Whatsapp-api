@@ -516,27 +516,22 @@ if (url.pathname === "/api/leads" && request.method === "GET") {
     }
 
     // --- API: Unlinked / Unverified clients ---
-    if (url.pathname === "/api/unlinked-clients" && request.method === "GET") {
-      const sql = `
-        SELECT m.from_number,
-               MAX(m.timestamp) AS last_msg,
-               COALESCE(c.name,'')  AS name,
-               COALESCE(c.email,'') AS email
-        FROM messages m
-        LEFT JOIN customers c ON m.from_number=c.phone
-        WHERE m.tag='unverified'
-          AND (c.verified IS NULL OR c.verified=0 OR c.customer_id IS NULL OR c.customer_id='')
-        GROUP BY m.from_number
-        ORDER BY last_msg DESC
-        LIMIT 200
-      `;
-      try {
-        const { results } = await env.DB.prepare(sql).all();
-        return withCORS(Response.json(results));
-      } catch {
-        return withCORS(new Response("DB error", { status: 500 }));
-      }
-    }
+   if (url.pathname === "/api/unlinked-clients" && request.method === "GET") {
+  const sql = `
+    SELECT
+      c.phone,
+      c.name,
+      c.email,
+      c.customer_id,
+      c.verified
+    FROM customers c
+    WHERE c.verified = 0
+    ORDER BY c.phone DESC
+    LIMIT 200
+  `;
+  const { results } = await env.DB.prepare(sql).all();
+  return withCORS(Response.json(results));
+}
 
     // --- API: Sync customers from messages ---
     if (url.pathname === "/api/customers-sync" && request.method === "POST") {
