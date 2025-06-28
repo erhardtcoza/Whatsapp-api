@@ -863,7 +863,64 @@ if (url.pathname === "/api/templates/unsynced" && request.method === "GET") {
   const { results } = await env.DB.prepare("SELECT * FROM templates WHERE synced=0 AND status='approved'").all();
   return withCORS(Response.json(results));
 }
- 
+
+    // Sync (submit) template to WhatsApp Cloud API
+if (url.pathname === "/api/templates/sync" && request.method === "POST") {
+  const { id } = await request.json();
+  const tpl = await env.DB.prepare("SELECT * FROM templates WHERE id=?").bind(id).first();
+  if (!tpl) return withCORS(new Response("Not found", { status: 404 }));
+
+  // Compose the API call payload
+  const body = {
+    name: tpl.name.toLowerCase().replace(/[^a-z0-9_]/g, "_"), // WhatsApp rules
+    language: tpl.language || "en",
+    category: "MARKETING", // or "UTILITY", "TRANSACTIONAL"
+    components: [
+      {
+        type: "BODY",
+        text: tpl.body,
+      },
+    ],
+  };
+
+  // WhatsApp API Call
+  const apiResp = await fetch(
+    `https://graph.facebook.com/v19.0/${env.BUSINESS_ID}/message_templates`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${env.WHATSAPP_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    }
+  );
+  const apiResult = await apiResp.json();
+
+  if (apiResp.ok && apiResult.id) {
+    // Success: Mark as synced
+    await env.DB.prepare("UPDATE templates SET synced=1 WHERE id=?").bind(id).run();
+    return withCORS(Response.json({ ok: true, result: apiResult }));
+  } else {
+    // Error: Save error to db/log if desired
+    return withCORS(Response.json({ ok: false, error: apiResult }, { status: 400 }));
+  }
+}
+if (url.pathname === "/api/templates/status" && request.method === "POST") {
+  const { name } = await request.json();
+  // Template name must be exact as submitted
+  const apiResp = await fetch(
+    `https://graph.facebook.com/v19.0/${env.BUSINESS_ID}/message_templates?name=${encodeURIComponent(name)}`,
+    {
+      headers: {
+        Authorization: `Bearer ${env.WHATSAPP_TOKEN}`,
+      },
+    }
+  );
+  const apiResult = await apiResp.json();
+  return withCORS(Response.json(apiResult));
+}
+
     
     // --- Serve static HTML (dashboard SPA) ---
     if (url.pathname === "/" || url.pathname === "/index.html") {
