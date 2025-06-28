@@ -347,6 +347,26 @@ export default {
       return withCORS(Response.json(results));
     }
 
+// --- API: List all customers with session count ---
+if (url.pathname === "/api/all-customers-with-sessions" && request.method === "GET") {
+  const sql = `
+    SELECT 
+      c.phone, 
+      c.name, 
+      c.customer_id,
+      COUNT(s.id) AS session_count
+    FROM customers c
+    LEFT JOIN chatsessions s ON s.phone = c.phone
+    WHERE c.verified = 1
+    GROUP BY c.phone, c.name, c.customer_id
+    ORDER BY c.name
+    LIMIT 200
+  `;
+  const { results } = await env.DB.prepare(sql).all();
+  return withCORS(Response.json(results));
+}
+
+    
     // --- API: Close a chat ---
     if (url.pathname === "/api/close-chat" && request.method === "POST") {
       const { phone } = await request.json();
