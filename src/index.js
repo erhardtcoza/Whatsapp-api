@@ -394,6 +394,24 @@ export default {
       return withCORS(Response.json({ ok: true }));
     }
 
+if (url.pathname === "/api/leads" && request.method === "GET") {
+  const { results } = await env.DB.prepare(`
+    SELECT phone, name, email, address, created_ts, contacted
+    FROM customers
+    WHERE verified=0 AND onboarding_stage='done'
+    ORDER BY created_ts DESC
+  `).all();
+  return withCORS(Response.json(results));
+}
+if (url.pathname === "/api/lead-contacted" && request.method === "POST") {
+  const { phone } = await request.json();
+  await env.DB.prepare(
+    `UPDATE customers SET contacted=1 WHERE phone=?`
+  ).bind(phone).run();
+  return withCORS(Response.json({ ok: true }));
+}
+
+    
     // --- API: GET customers (for Send Message page) ---
     if (url.pathname === "/api/customers" && request.method === "GET") {
       const { results } = await env.DB.prepare(
