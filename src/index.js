@@ -376,12 +376,30 @@ export default {
 
     // --- API: Verify client ---
     if (url.pathname === "/api/verify-client" && request.method === "POST") {
-      const { phone, name, email, customer_id } = await request.json();
-      await env.DB.prepare(`
-        UPDATE customers SET name=?, email=?, customer_id=?, verified=1 WHERE phone=?
-      `).bind(name, email, customer_id, phone).run();
-      return withCORS(Response.json({ ok: true }));
-    }
+  const { phone, name, email, customer_id } = await request.json();
+  await env.DB.prepare(`
+    UPDATE customers SET name=?, email=?, customer_id=?, verified=1 WHERE phone=?
+  `).bind(name, email, customer_id, phone).run();
+
+  // After verifying, send WhatsApp message and main menu
+  const message1 = "Hi, you have been verified by our admin team.";
+  const message2 = "How can we help you?\n1. Support\n2. Sales\n3. Accounts";
+  await sendWhatsAppMessage(phone, message1, env);
+  await sendWhatsAppMessage(phone, message2, env);
+  // Log to messages table for audit
+  const now = Date.now();
+  await env.DB.prepare(
+    `INSERT INTO messages (from_number, body, tag, timestamp, direction)
+     VALUES (?, ?, 'system', ?, 'outgoing')`
+  ).bind(phone, message1, now).run();
+  await env.DB.prepare(
+    `INSERT INTO messages (from_number, body, tag, timestamp, direction)
+     VALUES (?, ?, 'system', ?, 'outgoing')`
+  ).bind(phone, message2, now).run();
+
+  return withCORS(Response.json({ ok: true }));
+}
+
 
     // --- API: Send message to client ---
     if (url.pathname === "/api/send-message" && request.method === "POST") {
