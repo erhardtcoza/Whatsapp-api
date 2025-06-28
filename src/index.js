@@ -420,6 +420,15 @@ export default {
       return withCORS(Response.json(results));
     }
 
+    // --- API: List leads ---
+if (url.pathname === "/api/leads" && request.method === "GET") {
+  const { results } = await env.DB.prepare(
+    `SELECT * FROM leads ORDER BY created_at DESC LIMIT 200`
+  ).all();
+  return withCORS(Response.json(results));
+}
+
+    
     // --- API: Auto-Replies CRUD ---
     if (url.pathname === "/api/auto-replies" && request.method === "GET") {
       const { results } = await env.DB.prepare(`SELECT * FROM auto_replies`).all();
