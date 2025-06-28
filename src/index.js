@@ -844,6 +844,26 @@ if (url.pathname === "/api/templates/status" && request.method === "POST") {
   return withCORS(Response.json({ ok: true }));
 }
 
+   // Sync template (simulate WhatsApp API push)
+if (url.pathname === "/api/templates/sync" && request.method === "POST") {
+  const { id } = await request.json();
+  const tpl = await env.DB.prepare("SELECT * FROM templates WHERE id=?").bind(id).first();
+  if (!tpl) return withCORS(new Response("Not found", { status: 404 }));
+
+  // --- Simulate remote API call here ---
+  // const apiResult = await fetch("https://api.whatsapp.com/...", ...);
+
+  // Assume success for now:
+  await env.DB.prepare("UPDATE templates SET synced=1 WHERE id=?").bind(id).run();
+  return withCORS(Response.json({ ok: true, synced: true }));
+}
+
+// Get all templates that need syncing
+if (url.pathname === "/api/templates/unsynced" && request.method === "GET") {
+  const { results } = await env.DB.prepare("SELECT * FROM templates WHERE synced=0 AND status='approved'").all();
+  return withCORS(Response.json(results));
+}
+ 
     
     // --- Serve static HTML (dashboard SPA) ---
     if (url.pathname === "/" || url.pathname === "/index.html") {
