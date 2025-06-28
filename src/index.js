@@ -804,7 +804,6 @@ if (url.pathname === "/api/close-session" && request.method === "POST") {
       await env.DB.prepare(`DELETE FROM flow_steps WHERE id = ?`).bind(id).run();
       return withCORS(Response.json({ ok: true }));
     }
-
 // List all templates
 if (url.pathname === "/api/templates" && request.method === "GET") {
   const { results } = await env.DB.prepare(
@@ -823,8 +822,8 @@ if (url.pathname === "/api/templates" && request.method === "POST") {
     ).bind(name, body, language, status, now, id).run();
   } else {
     await env.DB.prepare(
-      `INSERT INTO templates (name, body, language, status, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?)`
+      `INSERT INTO templates (name, body, language, status, created_at, updated_at, synced)
+        VALUES (?, ?, ?, ?, ?, ?, 0)`
     ).bind(name, body, language, status || "draft", now, now).run();
   }
   return withCORS(Response.json({ ok: true }));
@@ -844,27 +843,15 @@ if (url.pathname === "/api/templates/status" && request.method === "POST") {
   return withCORS(Response.json({ ok: true }));
 }
 
-   // Sync template (simulate WhatsApp API push)
-if (url.pathname === "/api/templates/sync" && request.method === "POST") {
-  const { id } = await request.json();
-  const tpl = await env.DB.prepare("SELECT * FROM templates WHERE id=?").bind(id).first();
-  if (!tpl) return withCORS(new Response("Not found", { status: 404 }));
-
-  // --- Simulate remote API call here ---
-  // const apiResult = await fetch("https://api.whatsapp.com/...", ...);
-
-  // Assume success for now:
-  await env.DB.prepare("UPDATE templates SET synced=1 WHERE id=?").bind(id).run();
-  return withCORS(Response.json({ ok: true, synced: true }));
-}
-
 // Get all templates that need syncing
 if (url.pathname === "/api/templates/unsynced" && request.method === "GET") {
-  const { results } = await env.DB.prepare("SELECT * FROM templates WHERE synced=0 AND status='approved'").all();
+  const { results } = await env.DB.prepare(
+    "SELECT * FROM templates WHERE synced=0 AND status='approved'"
+  ).all();
   return withCORS(Response.json(results));
 }
 
-    // Sync (submit) template to WhatsApp Cloud API
+// Sync (submit) template to WhatsApp Cloud API
 if (url.pathname === "/api/templates/sync" && request.method === "POST") {
   const { id } = await request.json();
   const tpl = await env.DB.prepare("SELECT * FROM templates WHERE id=?").bind(id).first();
@@ -906,9 +893,12 @@ if (url.pathname === "/api/templates/sync" && request.method === "POST") {
     return withCORS(Response.json({ ok: false, error: apiResult }, { status: 400 }));
   }
 }
-if (url.pathname === "/api/templates/status" && request.method === "POST") {
-  const { name } = await request.json();
-  // Template name must be exact as submitted
+
+// Fetch WhatsApp template status from Meta
+if (url.pathname === "/api/templates/status" && request.method === "GET") {
+  const name = url.searchParams.get("name");
+  if (!name) return withCORS(new Response("Missing template name", { status: 400 }));
+
   const apiResp = await fetch(
     `https://graph.facebook.com/v19.0/${env.BUSINESS_ID}/message_templates?name=${encodeURIComponent(name)}`,
     {
@@ -920,6 +910,7 @@ if (url.pathname === "/api/templates/status" && request.method === "POST") {
   const apiResult = await apiResp.json();
   return withCORS(Response.json(apiResult));
 }
+
 
     
     // --- Serve static HTML (dashboard SPA) ---
