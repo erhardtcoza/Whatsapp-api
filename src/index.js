@@ -1431,6 +1431,7 @@ export default {
       const apiResult = await apiResp.json();
       return withCORS(Response.json(apiResult));
     }
+
 if (url.pathname === "/api/upload-clients" && request.method === "POST") {
   const { rows } = await request.json();
   for (const row of rows) {
@@ -1453,7 +1454,8 @@ if (url.pathname === "/api/upload-clients" && request.method === "POST") {
       row["Account balance"], row["Labels"]
     ).run();
   }
-  return withCORS(Response.json({ ok: true }));
+  // Key line for your React front-end:
+  return withCORS(Response.json({ replaced: rows.length }));
 }
 
     
