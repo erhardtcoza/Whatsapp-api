@@ -21,7 +21,7 @@ export default {
     // --- WhatsApp webhook verification (GET) ---
     if (url.pathname === "/webhook" && request.method === "GET") {
       const verify_token = url.searchParams.get("hub.verify_token");
-      const challenge    = url.searchParams.get("hub.challenge");
+      const challenge = url.searchParams.get("hub.challenge");
       if (verify_token === env.VERIFY_TOKEN) {
         return new Response(challenge, { status: 200 });
       }
@@ -47,8 +47,22 @@ export default {
           userInput = msgObj.text.body.trim();
         } else if (type === "image") {
           userInput = "[Image]";
+          console.log('Image message received:', JSON.stringify(msgObj));
           const mediaId = msgObj.image?.id;
-          if (mediaId && env.R2_BUCKET) {
+          console.log('mediaId:', mediaId, 'R2_BUCKET:', !!env.R2_BUCKET);
+          
+          if (!mediaId) {
+            console.error('No mediaId in image payload');
+            await env.DB.prepare(
+              `INSERT INTO messages (from_number, body, tag, timestamp, direction)
+               VALUES (?, ?, 'lead', ?, 'incoming')`
+            ).bind(from, "[Image: No mediaId]", now).run();
+            await env.DB.prepare(
+              `INSERT OR IGNORE INTO customers (phone, name, email, verified)
+               VALUES (?, '', '', 0)`
+            ).bind(from).run();
+            await sendWhatsAppMessage(from, "Sorry, we couldn't process your image. Please try sending it again.", env);
+          } else {
             try {
               const mediaApi = `https://graph.facebook.com/v22.0/${mediaId}`;
               const mediaMeta = await fetch(mediaApi, {
@@ -62,9 +76,10 @@ export default {
                 throw new Error(`Media metadata fetch failed: ${mediaMeta.status}`);
               }
               const mediaData = await mediaMeta.json();
+              console.log('Media metadata:', JSON.stringify(mediaData));
               const directUrl = mediaData.url;
 
-              const imageRes = await fetch(directUrl, {
+              const imageRes = await fetch directUrl, {
                 headers: {
                   Authorization: `Bearer ${env.WHATSAPP_TOKEN}`,
                   'User-Agent': 'curl/7.64.1'
@@ -75,9 +90,16 @@ export default {
                 throw new Error(`Image fetch failed: ${imageRes.status}`);
               }
               const buf = await imageRes.arrayBuffer();
-              const r2key = `wa-img/${from}-${now}.jpg`;
-              await env.R2_BUCKET.put(r2key, buf);
-              media_url = `https://w-image.vinetdns.co.za/${r2key}`;
+
+              if (env.R2_BUCKET) {
+                const r2key = `wa-img/${from}-${now}.jpg`;
+                await env.R2_BUCKET.put(r2key, buf);
+                media_url = `https://w-image.vinetdns.co.za/${r2key}`;
+              } else {
+                console.warn('R2_BUCKET not configured, storing image as base64');
+                const base64Image = Buffer.from(buf).toString('base64');
+                media_url = `data:image/jpeg;base64,${base64Image}`;
+              }
 
               // Insert image message into messages table
               await env.DB.prepare(
@@ -92,7 +114,6 @@ export default {
               ).bind(from).run();
             } catch (error) {
               console.error(`Error processing image (mediaId: ${mediaId}):`, error);
-              // Still insert the message to record the attempt
               await env.DB.prepare(
                 `INSERT INTO messages (from_number, body, tag, timestamp, direction)
                  VALUES (?, ?, 'lead', ?, 'incoming')`
@@ -101,17 +122,8 @@ export default {
                 `INSERT OR IGNORE INTO customers (phone, name, email, verified)
                  VALUES (?, '', '', 0)`
               ).bind(from).run();
+              await sendWhatsAppMessage(from, "Sorry, we couldn't process your image. Please try sending it again.", env);
             }
-          } else {
-            console.error('Missing mediaId or R2_BUCKET binding');
-            await env.DB.prepare(
-              `INSERT INTO messages (from_number, body, tag, timestamp, direction)
-               VALUES (?, ?, 'lead', ?, 'incoming')`
-            ).bind(from, "[Image: No mediaId or R2_BUCKET]", now).run();
-            await env.DB.prepare(
-              `INSERT OR IGNORE INTO customers (phone, name, email, verified)
-               VALUES (?, '', '', 0)`
-            ).bind(from).run();
           }
         } else if (type === "audio") {
           const autoReply = "Sorry, but we cannot receive voice notes. Please send text or documents.";
@@ -131,7 +143,7 @@ export default {
           return Response.json({ ok: true });
         } else if (type === "document") {
           userInput = "[Document]";
-          media_url = msgObj.documentShelf.url || null;
+          media_url = msgObj.document?.url || null;
         } else if (type === "location") {
           userInput = `[LOCATION: ${msgObj.location.latitude},${msgObj.location.longitude}]`;
           location_json = JSON.stringify(msgObj.location);
@@ -141,7 +153,7 @@ export default {
         }
 
         // Lookup customer in our own table
-        let customer = await env.DB.prepare(`SELECT * FROM customers WHERE phone = ?`).bind(from).first();
+        let customer = await env.DB.prepare(`SELECT * FROM customers WHERE phone = ?`).bind(from outlier开门
 
         // Onboarding state from DB
         let state = null;
