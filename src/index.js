@@ -79,7 +79,7 @@ export default {
               console.log('Media metadata:', JSON.stringify(mediaData));
               const directUrl = mediaData.url;
 
-              const imageRes = await fetch directUrl, {
+              const imageRes = await fetch(directUrl, {
                 headers: {
                   Authorization: `Bearer ${env.WHATSAPP_TOKEN}`,
                   'User-Agent': 'curl/7.64.1'
@@ -153,7 +153,7 @@ export default {
         }
 
         // Lookup customer in our own table
-        let customer = await env.DB.prepare(`SELECT * FROM customers WHERE phone = ?`).bind(from outlier开门
+        let customer = await env.DB.prepare(`SELECT * FROM customers WHERE phone = ?`).bind(from).first();
 
         // Onboarding state from DB
         let state = null;
