@@ -1435,17 +1435,23 @@ export default {
 if (url.pathname === "/api/upload-clients" && request.method === "POST") {
   const { rows } = await request.json();
   let replaced = 0;
+  const failed: { idx: number; reason: string; row: any }[] = [];
 
-  // Only these fields will be used for each insert/update
   const requiredFields = [
     "Status", "ID", "Full name", "Phone number",
     "Street", "ZIP code", "City", "Payment Method",
     "Account balance", "Labels"
   ];
 
-  for (const row of rows) {
-    // Skip rows missing any required fields
-    if (requiredFields.some(f => !(f in row))) continue;
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+
+    // Check for required fields
+    const missing = requiredFields.filter(f => !(f in row));
+    if (missing.length > 0) {
+      failed.push({ idx: i + 1, reason: `Missing fields: ${missing.join(", ")}`, row });
+      continue;
+    }
 
     try {
       await env.DB.prepare(`
@@ -1468,13 +1474,21 @@ if (url.pathname === "/api/upload-clients" && request.method === "POST") {
       ).run();
       replaced += 1;
     } catch (err) {
-      // Log error, but keep going with other rows
+      failed.push({ idx: i + 1, reason: String(err), row });
+      // Optional: Also log the error to console for Worker logs
       console.error("Row insert/update failed", { row, error: err });
     }
   }
-  return withCORS(Response.json({ replaced }));
-}
 
+  // Respond with detailed result
+  return withCORS(Response.json({
+    replaced,
+    failed_rows: failed,
+    message: failed.length
+      ? `Upload complete: ${replaced} clients replaced. ${failed.length} row(s) failed.`
+      : `Upload successful: ${replaced} clients replaced.`
+  }));
+}
     
     // --- Serve static HTML (dashboard SPA) ---
     if (url.pathname === "/" || url.pathname === "/index.html") {
