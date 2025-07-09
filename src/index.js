@@ -1434,28 +1434,45 @@ export default {
 
 if (url.pathname === "/api/upload-clients" && request.method === "POST") {
   const { rows } = await request.json();
+  let replaced = 0;
+
+  // Only these fields will be used for each insert/update
+  const requiredFields = [
+    "Status", "ID", "Full name", "Phone number",
+    "Street", "ZIP code", "City", "Payment Method",
+    "Account balance", "Labels"
+  ];
+
   for (const row of rows) {
-    await env.DB.prepare(`
-      INSERT INTO customers (status, customer_id, name, phone, street, zip_code, city, payment_method, balance, labels)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(customer_id) DO UPDATE SET
-        status=excluded.status,
-        name=excluded.name,
-        phone=excluded.phone,
-        street=excluded.street,
-        zip_code=excluded.zip_code,
-        city=excluded.city,
-        payment_method=excluded.payment_method,
-        balance=excluded.balance,
-        labels=excluded.labels
-    `).bind(
-      row["Status"], row["ID"], row["Full name"], row["Phone number"],
-      row["Street"], row["ZIP code"], row["City"], row["Payment Method"],
-      row["Account balance"], row["Labels"]
-    ).run();
+    // Skip rows missing any required fields
+    if (requiredFields.some(f => !(f in row))) continue;
+
+    try {
+      await env.DB.prepare(`
+        INSERT INTO customers (status, customer_id, name, phone, street, zip_code, city, payment_method, balance, labels)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(customer_id) DO UPDATE SET
+          status=excluded.status,
+          name=excluded.name,
+          phone=excluded.phone,
+          street=excluded.street,
+          zip_code=excluded.zip_code,
+          city=excluded.city,
+          payment_method=excluded.payment_method,
+          balance=excluded.balance,
+          labels=excluded.labels
+      `).bind(
+        row["Status"], row["ID"], row["Full name"], row["Phone number"],
+        row["Street"], row["ZIP code"], row["City"], row["Payment Method"],
+        row["Account balance"], row["Labels"]
+      ).run();
+      replaced += 1;
+    } catch (err) {
+      // Log error, but keep going with other rows
+      console.error("Row insert/update failed", { row, error: err });
+    }
   }
-  // Key line for your React front-end:
-  return withCORS(Response.json({ replaced: rows.length }));
+  return withCORS(Response.json({ replaced }));
 }
 
     
