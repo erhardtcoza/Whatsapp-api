@@ -47,7 +47,7 @@ function getFileExtension(mime_type, filename) {
 async function isDepartmentOpen(env, department, now) {
   const today = new Date(now);
   const day = today.getDay(); // 0 (Sunday) to 6 (Saturday)
-  const currentTime = today.toLocaleTimeString('en-ZA', { hour12: false, hour: '2-digit', minute: '2-digit' }); // e.g., "17:04"
+  const currentTime = today.toLocaleTimeString('en-ZA', { hour12: false, hour: '2-digit', minute: '2-digit' }); // e.g., "18:03"
   
   const officeHours = await env.DB.prepare(
     `SELECT open_time, close_time, closed FROM office_hours WHERE tag = ? AND day = ?`
@@ -71,17 +71,49 @@ async function isDepartmentOpen(env, department, now) {
   };
 }
 
-// --- Utility function to get open departments ---
-async function getOpenDepartments(env, now) {
-  const departments = ['support', 'sales', 'accounts'];
-  const openDepts = [];
-  for (const dept of departments) {
-    const { isOpen } = await isDepartmentOpen(env, dept, now);
-    if (isOpen) {
-      openDepts.push(dept.charAt(0).toUpperCase() + dept.slice(1));
+// --- Utility function to send message with Emergency button ---
+async function sendClosureMessageWithButton(phone, department, openTime, ticket, env) {
+  const message = {
+    messaging_product: "whatsapp",
+    to: phone,
+    type: "interactive",
+    interactive: {
+      type: "button",
+      body: {
+        text: `Unfortunately, our ${department} department is now closed and will be available again at ${openTime}. Your message has been received, and one of our agents will reply once we are available again.`
+      },
+      action: {
+        buttons: [
+          {
+            type: "reply",
+            reply: {
+              id: "emergency",
+              title: "Emergency"
+            }
+          }
+        ]
+      }
     }
+  };
+
+  const response = await fetch(`https://graph.facebook.com/v22.0/${env.PHONE_ID}/messages`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${env.WHATSAPP_TOKEN}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(message)
+  });
+
+  if (!response.ok) {
+    console.error(`Failed to send closure message with button: ${response.status} ${response.statusText}`);
+    throw new Error("Failed to send WhatsApp message");
   }
-  return openDepts;
+
+  await env.DB.prepare(
+    `INSERT OR IGNORE INTO messages (from_number, body, tag, timestamp, direction)
+     VALUES (?, ?, ?, ?, 'outgoing')`
+  ).bind(phone, message.interactive.body.text, `${department}_pending`, Date.now()).run();
 }
 
 export default {
@@ -140,6 +172,8 @@ export default {
         const type = msgObj.type;
         if (type === "text") {
           userInput = msgObj.text.body.trim();
+        } else if (type === "button" && msgObj.button?.text?.toLowerCase() === "emergency") {
+          userInput = "emergency";
         } else if (type === "image") {
           userInput = "[Image]";
           console.log('Image message received:', JSON.stringify(msgObj));
@@ -311,9 +345,9 @@ export default {
                VALUES (?, ?, 'lead', ?, 'incoming')`
             ).bind(from, "[Video: No mediaId]", now).run();
             await env.DB.prepare(
-              `INSERT OR IGNORE INTO customers (phone, name, email, verified)
-               VALUES (?, '', '', 0)`
-            ).bind(from).run();
+                `INSERT OR IGNORE INTO customers (phone, name, email, verified)
+                 VALUES (?, '', '', 0)`
+              ).bind(from).run();
             await sendWhatsAppMessage(from, "Sorry, we couldn't process your video. Please try sending it again.", env);
           } else {
             try {
@@ -412,6 +446,26 @@ export default {
 
         // --- Onboarding and lead flow ---
         if (!customer || customer.verified !== 1) {
+          // Check leads office hours
+          const { isOpen, openTime } = await isDepartmentOpen(env, 'leads', now);
+          if (!isOpen) {
+            const reply = `Unfortunately, our leads department is now closed and will be available again at ${openTime}. Your message has been received, and one of our agents will reply once we are available again.`;
+            await env.DB.prepare(
+              `INSERT OR IGNORE INTO messages (from_number, body, tag, timestamp, direction, media_url, location_json)
+               VALUES (?, ?, ?, ?, 'incoming', ?, ?)`
+            ).bind(from, userInput, 'leads_pending', now, media_url, location_json).run();
+            await sendWhatsAppMessage(from, reply, env);
+            await env.DB.prepare(
+              `INSERT OR IGNORE INTO messages (from_number, body, tag, timestamp, direction)
+               VALUES (?, ?, 'system', ?, 'outgoing')`
+            ).bind(from, reply, now).run();
+            await env.DB.prepare(
+              `INSERT OR IGNORE INTO customers (phone, name, email, verified)
+               VALUES (?, '', '', 0)`
+            ).bind(from).run();
+            return Response.json({ ok: true });
+          }
+
           if (!state) {
             // Start onboarding
             await env.DB.prepare(`INSERT OR IGNORE INTO onboarding (phone, step) VALUES (?, 'init')`).bind(from).run();
@@ -555,6 +609,40 @@ export default {
             }
           }
 
+          // Check for Emergency button press
+          if (lc === "emergency") {
+            const openSession = await env.DB.prepare(
+              `SELECT ticket, department FROM chatsessions WHERE phone = ? AND end_ts IS NULL ORDER BY start_ts DESC LIMIT 1`
+            ).bind(from).first();
+            if (openSession) {
+              // Close existing session
+              await env.DB.prepare(
+                `UPDATE chatsessions SET end_ts = ? WHERE ticket = ?`
+              ).bind(now, openSession.ticket).run();
+            }
+
+            // Create new session with Support
+            const today = new Date(now);
+            const yyyymmdd = today.toISOString().slice(0, 10).replace(/-/g, "");
+            const dayStart = Date.parse(today.toISOString().slice(0, 10) + "T00:00:00Z");
+            const dayEnd = Date.parse(today.toISOString().slice(0, 10) + "T23:59:59Z");
+            const { count = 0 } = await env.DB.prepare(
+              `SELECT COUNT(*) AS count FROM chatsessions WHERE start_ts BETWEEN ? AND ?`
+            ).bind(dayStart, dayEnd).first();
+            const session_id = `${yyyymmdd}${String(count + 1).padStart(3, '0')}`;
+            await env.DB.prepare(
+              `INSERT INTO chatsessions (phone, ticket, department, start_ts)
+               VALUES (?, ?, ?, ?)`
+            ).bind(from, session_id, 'support', now).run();
+            const reply = `Your chat session has been switched to our Support department (Ref: ${session_id}). Please reply with your message.`;
+            await sendWhatsAppMessage(from, reply, env);
+            await env.DB.prepare(
+              `INSERT OR IGNORE INTO messages (from_number, body, tag, timestamp, direction)
+               VALUES (?, ?, ?, ?, 'outgoing')`
+            ).bind(from, reply, 'support', now).run();
+            return Response.json({ ok: true });
+          }
+
           // Check for SWITCH command
           if (lc.startsWith("switch ")) {
             const requestedDept = lc.slice(7).trim().toLowerCase();
@@ -627,20 +715,11 @@ export default {
             if (openSession) {
               const { isOpen, openTime } = await isDepartmentOpen(env, openSession.department, now);
               if (!isOpen) {
-                const openDepts = await getOpenDepartments(env, now);
-                const switchPrompt = openDepts.length > 0
-                  ? ` If this is an emergency, would you like to switch to our ${openDepts[0]} department, which is still open? Reply with "SWITCH ${openDepts[0]}" to proceed.`
-                  : "";
-                const reply = `Unfortunately, our ${openSession.department} department is now closed and will be available again at ${openTime}. Your message has been received, and one of our agents will reply once we are available again.${switchPrompt}`;
                 await env.DB.prepare(
                   `INSERT OR IGNORE INTO messages (from_number, body, tag, timestamp, direction)
                    VALUES (?, ?, ?, ?, 'incoming')`
                 ).bind(from, userInput, `${openSession.department}_pending`, now).run();
-                await sendWhatsAppMessage(from, reply, env);
-                await env.DB.prepare(
-                  `INSERT OR IGNORE INTO messages (from_number, body, tag, timestamp, direction)
-                   VALUES (?, ?, 'system', ?, 'outgoing')`
-                ).bind(from, reply, now).run();
+                await sendClosureMessageWithButton(from, openSession.department, openTime, openSession.ticket, env);
                 return Response.json({ ok: true });
               }
               const reply = `You are currently in a chat session with our ${openSession.department} department (Ref: ${openSession.ticket}). Reply with your message to continue, or type CLOSE to end this session and choose a different department.`;
@@ -671,24 +750,6 @@ export default {
 
           if (deptTag) {
             const { isOpen, openTime } = await isDepartmentOpen(env, deptTag, now);
-            if (!isOpen) {
-              const openDepts = await getOpenDepartments(env, now);
-              const switchPrompt = openDepts.length > 0
-                ? ` If this is an emergency, would you like to switch to our ${openDepts[0]} department, which is still open? Reply with "SWITCH ${openDepts[0]}" to proceed.`
-                : "";
-              const reply = `Unfortunately, our ${deptTag} department is now closed and will be available again at ${openTime}. Your message has been received, and one of our agents will reply once we are available again.${switchPrompt}`;
-              await env.DB.prepare(
-                `INSERT OR IGNORE INTO messages (from_number, body, tag, timestamp, direction)
-                 VALUES (?, ?, ?, ?, 'incoming')`
-              ).bind(from, userInput, `${deptTag}_pending`, now).run();
-              await sendWhatsAppMessage(from, reply, env);
-              await env.DB.prepare(
-                `INSERT OR IGNORE INTO messages (from_number, body, tag, timestamp, direction)
-                 VALUES (?, ?, 'system', ?, 'outgoing')`
-              ).bind(from, reply, now).run();
-              return Response.json({ ok: true });
-            }
-
             const today = new Date(now);
             const yyyymmdd = today.toISOString().slice(0, 10).replace(/-/g, "");
             const dayStart = Date.parse(today.toISOString().slice(0, 10) + "T00:00:00Z");
@@ -701,6 +762,14 @@ export default {
               `INSERT INTO chatsessions (phone, ticket, department, start_ts)
                VALUES (?, ?, ?, ?)`
             ).bind(from, session_id, deptTag, now).run();
+            if (!isOpen) {
+              await env.DB.prepare(
+                `INSERT OR IGNORE INTO messages (from_number, body, tag, timestamp, direction)
+                 VALUES (?, ?, ?, ?, 'incoming')`
+              ).bind(from, userInput, `${deptTag}_pending`, now).run();
+              await sendClosureMessageWithButton(from, deptTag, openTime, session_id, env);
+              return Response.json({ ok: true });
+            }
             const ack = `Thank you, we have created a chat session with our ${deptTag} department: Your ref is ${session_id}, please reply with your message.`;
             await sendWhatsAppMessage(from, ack, env);
             await env.DB.prepare(
@@ -719,20 +788,11 @@ export default {
           if (openSession) {
             const { isOpen, openTime } = await isDepartmentOpen(env, openSession.department, now);
             if (!isOpen) {
-              const openDepts = await getOpenDepartments(env, now);
-              const switchPrompt = openDepts.length > 0
-                ? ` If this is an emergency, would you like to switch to our ${openDepts[0]} department, which is still open? Reply with "SWITCH ${openDepts[0]}" to proceed.`
-                : "";
-              const reply = `Unfortunately, our ${openSession.department} department is now closed and will be available again at ${openTime}. Your message has been received, and one of our agents will reply once we are available again.${switchPrompt}`;
               await env.DB.prepare(
                 `INSERT OR IGNORE INTO messages (from_number, body, tag, timestamp, direction, media_url, location_json)
                  VALUES (?, ?, ?, ?, 'incoming', ?, ?)`
               ).bind(from, userInput, `${openSession.department}_pending`, now, media_url, location_json).run();
-              await sendWhatsAppMessage(from, reply, env);
-              await env.DB.prepare(
-                `INSERT OR IGNORE INTO messages (from_number, body, tag, timestamp, direction)
-                 VALUES (?, ?, 'system', ?, 'outgoing')`
-              ).bind(from, reply, now).run();
+              await sendClosureMessageWithButton(from, openSession.department, openTime, openSession.ticket, env);
               return Response.json({ ok: true });
             }
             msgTag = openSession.department;
