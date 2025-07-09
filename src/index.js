@@ -19,6 +19,30 @@ function arrayBufferToBase64(buffer) {
   return btoa(binary);
 }
 
+// --- Utility function to get file extension from mime_type or filename ---
+function getFileExtension(mime_type, filename) {
+  const mimeToExt = {
+    'application/pdf': 'pdf',
+    'video/mp4': 'mp4',
+    'video/mpeg': 'mpeg',
+    'video/webm': 'webm',
+    'application/msword': 'doc',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx',
+    'application/vnd.ms-excel': 'xls',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'xlsx'
+  };
+  if (mimeToExt[mime_type]) {
+    return mimeToExt[mime_type];
+  }
+  if (filename) {
+    const ext = filename.split('.').pop()?.toLowerCase();
+    if (ext && ['pdf', 'doc', 'docx', 'xls', 'xlsx'].includes(ext)) {
+      return ext;
+    }
+  }
+  return 'bin'; // Fallback extension
+}
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -101,15 +125,12 @@ export default {
               }
               const buf = await imageRes.arrayBuffer();
 
-              if (env.R2_BUCKET) {
-                const r2key = `wa-img/${from}-${now}.jpg`;
-                await env.R2_BUCKET.put(r2key, buf);
-                media_url = `https://w-image.vinetdns.co.za/${r2key}`;
-              } else {
-                console.warn('R2_BUCKET not configured, storing image as base64');
-                const base64Image = arrayBufferToBase64(buf);
-                media_url = `data:image/jpeg;base64,${base64Image}`;
+              if (!env.R2_BUCKET) {
+                throw new Error('R2_BUCKET binding is missing');
               }
+              const r2key = `wa-img/${from}-${now}.jpg`;
+              await env.R2_BUCKET.put(r2key, buf);
+              media_url = `https://w-image.vinetdns.co.za/${r2key}`;
 
               // Insert image message into messages table
               await env.DB.prepare(
@@ -135,6 +156,165 @@ export default {
               await sendWhatsAppMessage(from, "Sorry, we couldn't process your image. Please try sending it again.", env);
             }
           }
+        } else if (type === "document") {
+          userInput = "[Document]";
+          console.log('Document message received:', JSON.stringify(msgObj));
+          const mediaId = msgObj.document?.id;
+          const mimeType = msgObj.document?.mime_type;
+          const filename = msgObj.document?.filename || '';
+          console.log('mediaId:', mediaId, 'mimeType:', mimeType, 'filename:', filename, 'R2_BUCKET:', !!env.R2_BUCKET);
+
+          if (!mediaId) {
+            console.error('No mediaId in document payload');
+            await env.DB.prepare(
+              `INSERT INTO messages (from_number, body, tag, timestamp, direction)
+               VALUES (?, ?, 'lead', ?, 'incoming')`
+            ).bind(from, "[Document: No mediaId]", now).run();
+            await env.DB.prepare(
+              `INSERT OR IGNORE INTO customers (phone, name, email, verified)
+               VALUES (?, '', '', 0)`
+            ).bind(from).run();
+            await sendWhatsAppMessage(from, "Sorry, we couldn't process your document. Please try sending it again.", env);
+          } else {
+            try {
+              const mediaApi = `https://graph.facebook.com/v22.0/${mediaId}`;
+              const mediaMeta = await fetch(mediaApi, {
+                headers: {
+                  Authorization: `Bearer ${env.WHATSAPP_TOKEN}`,
+                  'User-Agent': 'curl/7.64.1'
+                }
+              });
+              if (!mediaMeta.ok) {
+                console.error(`Failed to fetch document metadata: ${mediaMeta.status} ${mediaMeta.statusText}`);
+                throw new Error(`Document metadata fetch failed: ${mediaMeta.status}`);
+              }
+              const mediaData = await mediaMeta.json();
+              console.log('Document metadata:', JSON.stringify(mediaData));
+              const directUrl = mediaData.url;
+
+              const docRes = await fetch(directUrl, {
+                headers: {
+                  Authorization: `Bearer ${env.WHATSAPP_TOKEN}`,
+                  'User-Agent': 'curl/7.64.1'
+                }
+              });
+              if (!docRes.ok) {
+                console.error(`Failed to fetch document: ${docRes.status} ${docRes.statusText}`);
+                throw new Error(`Document fetch failed: ${docRes.status}`);
+              }
+              const buf = await docRes.arrayBuffer();
+
+              if (!env.R2_BUCKET) {
+                throw new Error('R2_BUCKET binding is missing');
+              }
+              const ext = getFileExtension(mimeType, filename);
+              const r2key = `wa-doc/${from}-${now}.${ext}`;
+              await env.R2_BUCKET.put(r2key, buf);
+              media_url = `https://w-image.vinetdns.co.za/${r2key}`;
+
+              // Insert document message into messages table
+              await env.DB.prepare(
+                `INSERT INTO messages (from_number, body, tag, timestamp, direction, media_url)
+                 VALUES (?, ?, 'lead', ?, 'incoming', ?)`
+              ).bind(from, userInput, now, media_url).run();
+
+              // Ensure customer exists in customers table
+              await env.DB.prepare(
+                `INSERT OR IGNORE INTO customers (phone, name, email, verified)
+                 VALUES (?, '', '', 0)`
+              ).bind(from).run();
+            } catch (error) {
+              console.error(`Error processing document (mediaId: ${mediaId}):`, error);
+              await env.DB.prepare(
+                `INSERT INTO messages (from_number, body, tag, timestamp, direction)
+                 VALUES (?, ?, 'lead', ?, 'incoming')`
+              ).bind(from, "[Document: Failed to process]", now).run();
+              await env.DB.prepare(
+                `INSERT OR IGNORE INTO customers (phone, name, email, verified)
+                 VALUES (?, '', '', 0)`
+              ).bind(from).run();
+              await sendWhatsAppMessage(from, "Sorry, we couldn't process your document. Please try sending it again.", env);
+            }
+          }
+        } else if (type === "video") {
+          userInput = "[Video]";
+          console.log('Video message received:', JSON.stringify(msgObj));
+          const mediaId = msgObj.video?.id;
+          const mimeType = msgObj.video?.mime_type;
+          console.log('mediaId:', mediaId, 'mimeType:', mimeType, 'R2_BUCKET:', !!env.R2_BUCKET);
+
+          if (!mediaId) {
+            console.error('No mediaId in video payload');
+            await env.DB.prepare(
+              `INSERT INTO messages (from_number, body, tag, timestamp, direction)
+               VALUES (?, ?, 'lead', ?, 'incoming')`
+            ).bind(from, "[Video: No mediaId]", now).run();
+            await env.DB.prepare(
+              `INSERT OR IGNORE INTO customers (phone, name, email, verified)
+               VALUES (?, '', '', 0)`
+            ).bind(from).run();
+            await sendWhatsAppMessage(from, "Sorry, we couldn't process your video. Please try sending it again.", env);
+          } else {
+            try {
+              const mediaApi = `https://graph.facebook.com/v22.0/${mediaId}`;
+              const mediaMeta = await fetch(mediaApi, {
+                headers: {
+                  Authorization: `Bearer ${env.WHATSAPP_TOKEN}`,
+                  'User-Agent': 'curl/7.64.1'
+                }
+              });
+              if (!mediaMeta.ok) {
+                console.error(`Failed to fetch video metadata: ${mediaMeta.status} ${mediaMeta.statusText}`);
+                throw new Error(`Video metadata fetch failed: ${mediaMeta.status}`);
+              }
+              const mediaData = await mediaMeta.json();
+              console.log('Video metadata:', JSON.stringify(mediaData));
+              const directUrl = mediaData.url;
+
+              const videoRes = await fetch(directUrl, {
+                headers: {
+                  Authorization: `Bearer ${env.WHATSAPP_TOKEN}`,
+                  'User-Agent': 'curl/7.64.1'
+                }
+              });
+              if (!videoRes.ok) {
+                console.error(`Failed to fetch video: ${videoRes.status} ${videoRes.statusText}`);
+                throw new Error(`Video fetch failed: ${videoRes.status}`);
+              }
+              const buf = await videoRes.arrayBuffer();
+
+              if (!env.R2_BUCKET) {
+                throw new Error('R2_BUCKET binding is missing');
+              }
+              const ext = getFileExtension(mimeType, '');
+              const r2key = `wa-video/${from}-${now}.${ext}`;
+              await env.R2_BUCKET.put(r2key, buf);
+              media_url = `https://w-image.vinetdns.co.za/${r2key}`;
+
+              // Insert video message into messages table
+              await env.DB.prepare(
+                `INSERT INTO messages (from_number, body, tag, timestamp, direction, media_url)
+                 VALUES (?, ?, 'lead', ?, 'incoming', ?)`
+              ).bind(from, userInput, now, media_url).run();
+
+              // Ensure customer exists in customers table
+              await env.DB.prepare(
+                `INSERT OR IGNORE INTO customers (phone, name, email, verified)
+                 VALUES (?, '', '', 0)`
+              ).bind(from).run();
+            } catch (error) {
+              console.error(`Error processing video (mediaId: ${mediaId}):`, error);
+              await env.DB.prepare(
+                `INSERT INTO messages (from_number, body, tag, timestamp, direction)
+                 VALUES (?, ?, 'lead', ?, 'incoming')`
+              ).bind(from, "[Video: Failed to process]", now).run();
+              await env.DB.prepare(
+                `INSERT OR IGNORE INTO customers (phone, name, email, verified)
+                 VALUES (?, '', '', 0)`
+              ).bind(from).run();
+              await sendWhatsAppMessage(from, "Sorry, we couldn't process your video. Please try sending it again.", env);
+            }
+          }
         } else if (type === "audio") {
           const autoReply = "Sorry, but we cannot receive voice notes. Please send text or documents.";
           await sendWhatsAppMessage(from, autoReply, env);
@@ -151,9 +331,6 @@ export default {
              VALUES (?, '', '', 0)`
           ).bind(from).run();
           return Response.json({ ok: true });
-        } else if (type === "document") {
-          userInput = "[Document]";
-          media_url = msgObj.document?.url || null;
         } else if (type === "location") {
           userInput = `[LOCATION: ${msgObj.location.latitude},${msgObj.location.longitude}]`;
           location_json = JSON.stringify(msgObj.location);
