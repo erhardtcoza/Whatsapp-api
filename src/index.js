@@ -71,9 +71,19 @@ export default {
 
         const from = msgObj.from;
         const now = Date.now();
+        const msgId = msgObj.id; // Unique WhatsApp message ID
         let userInput = "";
         let media_url = null;
         let location_json = null;
+
+        // Check for duplicate message
+        const existing = await env.DB.prepare(
+          `SELECT id FROM messages WHERE from_number = ? AND body LIKE ? AND timestamp > ?`
+        ).bind(from, `[%${msgObj.type}%]`, now - 60000).first(); // Check last minute
+        if (existing) {
+          console.log(`Duplicate message detected: msgId=${msgId}`);
+          return Response.json({ ok: true });
+        }
 
         // Parse incoming message of any type, and store media if needed
         const type = msgObj.type;
@@ -88,7 +98,7 @@ export default {
           if (!mediaId) {
             console.error('No mediaId in image payload');
             await env.DB.prepare(
-              `INSERT INTO messages (from_number, body, tag, timestamp, direction)
+              `INSERT OR IGNORE INTO messages (from_number, body, tag, timestamp, direction)
                VALUES (?, ?, 'lead', ?, 'incoming')`
             ).bind(from, "[Image: No mediaId]", now).run();
             await env.DB.prepare(
@@ -106,11 +116,11 @@ export default {
                 }
               });
               if (!mediaMeta.ok) {
-                console.error(`Failed to fetch media metadata: ${mediaMeta.status} ${mediaMeta.statusText}`);
-                throw new Error(`Media metadata fetch failed: ${mediaMeta.status}`);
+                console.error(`Failed to fetch image metadata: ${mediaMeta.status} ${mediaMeta.statusText}`);
+                throw new Error(`Image metadata fetch failed: ${mediaMeta.status}`);
               }
               const mediaData = await mediaMeta.json();
-              console.log('Media metadata:', JSON.stringify(mediaData));
+              console.log('Image metadata:', JSON.stringify(mediaData));
               const directUrl = mediaData.url;
 
               const imageRes = await fetch(directUrl, {
@@ -134,7 +144,7 @@ export default {
 
               // Insert image message into messages table
               await env.DB.prepare(
-                `INSERT INTO messages (from_number, body, tag, timestamp, direction, media_url)
+                `INSERT OR IGNORE INTO messages (from_number, body, tag, timestamp, direction, media_url)
                  VALUES (?, ?, 'lead', ?, 'incoming', ?)`
               ).bind(from, userInput, now, media_url).run();
 
@@ -146,7 +156,7 @@ export default {
             } catch (error) {
               console.error(`Error processing image (mediaId: ${mediaId}):`, error);
               await env.DB.prepare(
-                `INSERT INTO messages (from_number, body, tag, timestamp, direction)
+                `INSERT OR IGNORE INTO messages (from_number, body, tag, timestamp, direction)
                  VALUES (?, ?, 'lead', ?, 'incoming')`
               ).bind(from, "[Image: Failed to process]", now).run();
               await env.DB.prepare(
@@ -167,7 +177,7 @@ export default {
           if (!mediaId) {
             console.error('No mediaId in document payload');
             await env.DB.prepare(
-              `INSERT INTO messages (from_number, body, tag, timestamp, direction)
+              `INSERT OR IGNORE INTO messages (from_number, body, tag, timestamp, direction)
                VALUES (?, ?, 'lead', ?, 'incoming')`
             ).bind(from, "[Document: No mediaId]", now).run();
             await env.DB.prepare(
@@ -214,7 +224,7 @@ export default {
 
               // Insert document message into messages table
               await env.DB.prepare(
-                `INSERT INTO messages (from_number, body, tag, timestamp, direction, media_url)
+                `INSERT OR IGNORE INTO messages (from_number, body, tag, timestamp, direction, media_url)
                  VALUES (?, ?, 'lead', ?, 'incoming', ?)`
               ).bind(from, userInput, now, media_url).run();
 
@@ -226,7 +236,7 @@ export default {
             } catch (error) {
               console.error(`Error processing document (mediaId: ${mediaId}):`, error);
               await env.DB.prepare(
-                `INSERT INTO messages (from_number, body, tag, timestamp, direction)
+                `INSERT OR IGNORE INTO messages (from_number, body, tag, timestamp, direction)
                  VALUES (?, ?, 'lead', ?, 'incoming')`
               ).bind(from, "[Document: Failed to process]", now).run();
               await env.DB.prepare(
@@ -246,7 +256,7 @@ export default {
           if (!mediaId) {
             console.error('No mediaId in video payload');
             await env.DB.prepare(
-              `INSERT INTO messages (from_number, body, tag, timestamp, direction)
+              `INSERT OR IGNORE INTO messages (from_number, body, tag, timestamp, direction)
                VALUES (?, ?, 'lead', ?, 'incoming')`
             ).bind(from, "[Video: No mediaId]", now).run();
             await env.DB.prepare(
@@ -293,7 +303,7 @@ export default {
 
               // Insert video message into messages table
               await env.DB.prepare(
-                `INSERT INTO messages (from_number, body, tag, timestamp, direction, media_url)
+                `INSERT OR IGNORE INTO messages (from_number, body, tag, timestamp, direction, media_url)
                  VALUES (?, ?, 'lead', ?, 'incoming', ?)`
               ).bind(from, userInput, now, media_url).run();
 
@@ -305,7 +315,7 @@ export default {
             } catch (error) {
               console.error(`Error processing video (mediaId: ${mediaId}):`, error);
               await env.DB.prepare(
-                `INSERT INTO messages (from_number, body, tag, timestamp, direction)
+                `INSERT OR IGNORE INTO messages (from_number, body, tag, timestamp, direction)
                  VALUES (?, ?, 'lead', ?, 'incoming')`
               ).bind(from, "[Video: Failed to process]", now).run();
               await env.DB.prepare(
@@ -319,11 +329,11 @@ export default {
           const autoReply = "Sorry, but we cannot receive voice notes. Please send text or documents.";
           await sendWhatsAppMessage(from, autoReply, env);
           await env.DB.prepare(
-            `INSERT INTO messages (from_number, body, tag, timestamp, direction, media_url)
+            `INSERT OR IGNORE INTO messages (from_number, body, tag, timestamp, direction, media_url)
              VALUES (?, ?, 'lead', ?, 'incoming', ?)`
           ).bind(from, "[Voice Note]", now, msgObj.audio.url).run();
           await env.DB.prepare(
-            `INSERT INTO messages (from_number, body, tag, timestamp, direction)
+            `INSERT OR IGNORE INTO messages (from_number, body, tag, timestamp, direction)
              VALUES (?, ?, 'lead', ?, 'outgoing')`
           ).bind(from, autoReply, now).run();
           await env.DB.prepare(
@@ -335,7 +345,7 @@ export default {
           userInput = `[LOCATION: ${msgObj.location.latitude},${msgObj.location.longitude}]`;
           location_json = JSON.stringify(msgObj.location);
         } else {
-          userInput = `[Unknown: ${type}]`;
+          userInput = `[Unsupported: ${type}]`;
           if (msgObj[type]?.url) media_url = msgObj[type].url;
         }
 
@@ -358,7 +368,7 @@ export default {
               "Welcome. We want to assist you as effectively and quickly as possible, but we need your information first. Please reply only with the options provided.\nAre you currently a Vinet client? Yes / No";
             await sendWhatsAppMessage(from, prompt, env);
             await env.DB.prepare(
-              `INSERT INTO messages (from_number, body, tag, timestamp, direction)
+              `INSERT OR IGNORE INTO messages (from_number, body, tag, timestamp, direction)
                VALUES (?, ?, 'system', ?, 'outgoing')`
             ).bind(from, prompt, now).run();
             return Response.json({ ok: true });
@@ -372,7 +382,7 @@ export default {
               const msg = "Please reply with your Client Code, First and Last Name, and Email address, separated by commas.\nExample: 123456, John Doe, john@example.com";
               await sendWhatsAppMessage(from, msg, env);
               await env.DB.prepare(
-                `INSERT INTO messages (from_number, body, tag, timestamp, direction)
+                `INSERT OR IGNORE INTO messages (from_number, body, tag, timestamp, direction)
                  VALUES (?, ?, 'system', ?, 'outgoing')`
               ).bind(from, msg, now).run();
               return Response.json({ ok: true });
@@ -381,7 +391,7 @@ export default {
               const msg = "Thank you for showing interest in our service, please provide us with your First and Last name, email address and address, separated by commas.";
               await sendWhatsAppMessage(from, msg, env);
               await env.DB.prepare(
-                `INSERT INTO messages (from_number, body, tag, timestamp, direction)
+                `INSERT OR IGNORE INTO messages (from_number, body, tag, timestamp, direction)
                  VALUES (?, ?, 'system', ?, 'outgoing')`
               ).bind(from, msg, now).run();
               return Response.json({ ok: true });
@@ -389,7 +399,7 @@ export default {
               const msg = "Please reply only with Yes or No.";
               await sendWhatsAppMessage(from, msg, env);
               await env.DB.prepare(
-                `INSERT INTO messages (from_number, body, tag, timestamp, direction)
+                `INSERT OR IGNORE INTO messages (from_number, body, tag, timestamp, direction)
                  VALUES (?, ?, 'system', ?, 'outgoing')`
               ).bind(from, msg, now).run();
               return Response.json({ ok: true });
@@ -414,7 +424,7 @@ export default {
             const msg = "Thank you. Your details have been received and are pending verification by our agents.";
             await sendWhatsAppMessage(from, msg, env);
             await env.DB.prepare(
-              `INSERT INTO messages (from_number, body, tag, timestamp, direction)
+              `INSERT OR IGNORE INTO messages (from_number, body, tag, timestamp, direction)
                VALUES (?, ?, 'system', ?, 'outgoing')`
             ).bind(from, msg, now).run();
             return Response.json({ ok: true });
@@ -437,7 +447,7 @@ export default {
             const msg = "Thank you, our sales team will be in contact with you shortly.";
             await sendWhatsAppMessage(from, msg, env);
             await env.DB.prepare(
-              `INSERT INTO messages (from_number, body, tag, timestamp, direction)
+              `INSERT OR IGNORE INTO messages (from_number, body, tag, timestamp, direction)
                VALUES (?, ?, 'lead', ?, 'outgoing')`
             ).bind(from, msg, now).run();
             return Response.json({ ok: true });
@@ -451,7 +461,7 @@ export default {
               const msg = `Hi, you have been verified by our admin team.\nHow can we help you?\n1. Support\n2. Sales\n3. Accounts`;
               await sendWhatsAppMessage(from, msg, env);
               await env.DB.prepare(
-                `INSERT INTO messages (from_number, body, tag, timestamp, direction)
+                `INSERT OR IGNORE INTO messages (from_number, body, tag, timestamp, direction)
                  VALUES (?, ?, 'system', ?, 'outgoing')`
               ).bind(from, msg, now).run();
               return Response.json({ ok: true });
@@ -466,17 +476,61 @@ export default {
         if (customer && customer.verified === 1) {
           const greetings = ["hi", "hello", "hey", "good day"];
           const lc = userInput.toLowerCase();
+
+          // Check for CLOSE command
+          if (lc === "close") {
+            const openSession = await env.DB.prepare(
+              `SELECT ticket, department FROM chatsessions WHERE phone = ? AND end_ts IS NULL ORDER BY start_ts DESC LIMIT 1`
+            ).bind(from).first();
+            if (openSession) {
+              await env.DB.prepare(
+                `UPDATE chatsessions SET end_ts = ? WHERE ticket = ?`
+              ).bind(now, openSession.ticket).run();
+              const reply = `Your chat session (Ref: ${openSession.ticket}) with ${openSession.department} has been closed. To start a new session, say hi.`;
+              await sendWhatsAppMessage(from, reply, env);
+              await env.DB.prepare(
+                `INSERT OR IGNORE INTO messages (from_number, body, tag, timestamp, direction)
+                 VALUES (?, ?, 'system', ?, 'outgoing')`
+              ).bind(from, reply, now).run();
+              return Response.json({ ok: true });
+            } else {
+              const reply = `No active chat session found. To start a new session, say hi.`;
+              await sendWhatsAppMessage(from, reply, env);
+              await env.DB.prepare(
+                `INSERT OR IGNORE INTO messages (from_number, body, tag, timestamp, direction)
+                 VALUES (?, ?, 'system', ?, 'outgoing')`
+              ).bind(from, reply, now).run();
+              return Response.json({ ok: true });
+            }
+          }
+
+          // Check for greetings
           if (greetings.includes(lc)) {
             const firstName = (customer.name || "").split(" ")[0] || "";
-            const reply =
-              `Hello ${firstName}! How can we help you today?\n` +
-              `1. Support\n2. Sales\n3. Accounts`;
-            await sendWhatsAppMessage(from, reply, env);
-            await env.DB.prepare(
-              `INSERT INTO messages (from_number, body, tag, timestamp, direction)
-               VALUES (?, ?, 'customer', ?, 'outgoing')`
-            ).bind(from, reply, now).run();
-            return Response.json({ ok: true });
+            // Check for open session
+            const openSession = await env.DB.prepare(
+              `SELECT ticket, department FROM chatsessions WHERE phone = ? AND end_ts IS NULL ORDER BY start_ts DESC LIMIT 1`
+            ).bind(from).first();
+            console.log(`Checking open session for ${from}:`, openSession);
+            if (openSession) {
+              const reply = `You are currently in a chat session with our ${openSession.department} department (Ref: ${openSession.ticket}). Reply with your message to continue, or type CLOSE to end this session and choose a different department.`;
+              await sendWhatsAppMessage(from, reply, env);
+              await env.DB.prepare(
+                `INSERT OR IGNORE INTO messages (from_number, body, tag, timestamp, direction)
+                 VALUES (?, ?, 'system', ?, 'outgoing')`
+              ).bind(from, reply, now).run();
+              return Response.json({ ok: true });
+            } else {
+              const reply =
+                `Hello ${firstName}! How can we help you today?\n` +
+                `1. Support\n2. Sales\n3. Accounts`;
+              await sendWhatsAppMessage(from, reply, env);
+              await env.DB.prepare(
+                `INSERT OR IGNORE INTO messages (from_number, body, tag, timestamp, direction)
+                 VALUES (?, ?, 'customer', ?, 'outgoing')`
+              ).bind(from, reply, now).run();
+              return Response.json({ ok: true });
+            }
           }
 
           // Department choice
@@ -501,14 +555,13 @@ export default {
             const ack = `Thank you, we have created a chat session with our ${deptTag} department: Your ref is ${session_id}, please reply with your message.`;
             await sendWhatsAppMessage(from, ack, env);
             await env.DB.prepare(
-              `INSERT INTO messages (from_number, body, tag, timestamp, direction)
+              `INSERT OR IGNORE INTO messages (from_number, body, tag, timestamp, direction)
                VALUES (?, ?, ?, ?, 'outgoing')`
             ).bind(from, ack, deptTag, now).run();
             return Response.json({ ok: true });
           }
 
-          // -------------- Main chat messaging --------------
-          // If client has open session, tag the message with department
+          // Main chat messaging
           const openSession = await env.DB.prepare(
             `SELECT * FROM chatsessions WHERE phone=? AND end_ts IS NULL ORDER BY start_ts DESC LIMIT 1`
           ).bind(from).first();
@@ -519,7 +572,7 @@ export default {
           }
 
           await env.DB.prepare(
-            `INSERT INTO messages (from_number, body, tag, timestamp, direction, media_url, location_json)
+            `INSERT OR IGNORE INTO messages (from_number, body, tag, timestamp, direction, media_url, location_json)
              VALUES (?, ?, ?, ?, 'incoming', ?, ?)`
           ).bind(from, userInput, msgTag, now, media_url, location_json).run();
 
@@ -690,14 +743,15 @@ export default {
       // Set end_ts for the session to now
       await env.DB.prepare(`UPDATE chatsessions SET end_ts = ? WHERE ticket = ?`)
         .bind(Date.now(), ticket).run();
-      // Optionally notify the user
-      const sess = await env.DB.prepare(`SELECT phone FROM chatsessions WHERE ticket = ?`).bind(ticket).first();
+      // Notify the user
+      const sess = await env.DB.prepare(`SELECT phone, department FROM chatsessions WHERE ticket = ?`).bind(ticket).first();
       if (sess && sess.phone) {
-        await sendWhatsAppMessage(sess.phone, "This chat session has been closed. To start a new one, just say hi!", env);
+        const reply = `Your chat session (Ref: ${ticket}) with ${sess.department} has been closed. To start a new session, just say hi!`;
+        await sendWhatsAppMessage(sess.phone, reply, env);
         await env.DB.prepare(
-          `INSERT INTO messages (from_number, body, tag, timestamp, direction)
+          `INSERT OR IGNORE INTO messages (from_number, body, tag, timestamp, direction)
            VALUES (?, ?, 'system', ?, 'outgoing')`
-        ).bind(sess.phone, "This chat session has been closed. To start a new one, just say hi!", Date.now()).run();
+        ).bind(sess.phone, reply, Date.now()).run();
       }
       return withCORS(Response.json({ ok: true }));
     }
@@ -706,12 +760,12 @@ export default {
     if (url.pathname === "/api/close-chat" && request.method === "POST") {
       const { phone } = await request.json();
       if (!phone) return withCORS(new Response("Missing phone", { status: 400 }));
-      // mark closed
+      // Mark closed
       await env.DB.prepare(`UPDATE messages SET closed=1 WHERE from_number=?`).bind(phone).run();
       const notice = "This session has been closed. To start a new chat, just say ‘hi’ again.";
       await sendWhatsAppMessage(phone, notice, env);
       await env.DB.prepare(
-        `INSERT INTO messages (from_number, body, tag, timestamp, direction)
+        `INSERT OR IGNORE INTO messages (from_number, body, tag, timestamp, direction)
          VALUES (?, ?, 'system', ?, 'outgoing')`
       ).bind(phone, notice, Date.now()).run();
       return withCORS(Response.json({ ok: true }));
@@ -727,7 +781,7 @@ export default {
       const msg = `Hi, you have been verified by our admin team.\nHow can we help you?\n1. Support\n2. Sales\n3. Accounts`;
       await sendWhatsAppMessage(phone, msg, env);
       await env.DB.prepare(
-        `INSERT INTO messages (from_number, body, tag, timestamp, direction)
+        `INSERT OR IGNORE INTO messages (from_number, body, tag, timestamp, direction)
          VALUES (?, ?, 'system', ?, 'outgoing')`
       ).bind(phone, msg, Date.now()).run();
       return withCORS(Response.json({ ok: true }));
@@ -738,7 +792,7 @@ export default {
       const { phone, body } = await request.json();
       await sendWhatsAppMessage(phone, body, env);
       await env.DB.prepare(
-        `INSERT INTO messages (from_number, body, tag, timestamp, direction)
+        `INSERT OR IGNORE INTO messages (from_number, body, tag, timestamp, direction)
          VALUES (?, ?, 'system', ?, 'outgoing')`
       ).bind(phone, body, Date.now()).run();
       return withCORS(Response.json({ ok: true }));
@@ -776,7 +830,7 @@ export default {
       return withCORS(Response.json({ ok: true }));
     }
 
-    // --- API: GET customers (for Send Message page) ---
+    // --- API: Get customers (for Send Message page) ---
     if (url.pathname === "/api/customers" && request.method === "GET") {
       const { results } = await env.DB.prepare(
         `SELECT phone, name, customer_id, email
@@ -1016,7 +1070,7 @@ export default {
     if (url.pathname === "/api/flows/delete" && request.method === "POST") {
       const { id } = await request.json();
       if (!id) return withCORS(new Response("Missing flow id", { status: 400 }));
-      // cascade delete steps
+      // Cascade delete steps
       await env.DB.prepare(`DELETE FROM flow_steps WHERE flow_id = ?`).bind(id).run();
       await env.DB.prepare(`DELETE FROM flows WHERE id = ?`).bind(id).run();
       return withCORS(Response.json({ ok: true }));
@@ -1055,15 +1109,13 @@ export default {
       return withCORS(Response.json({ ok: true }));
     }
 
-    // List all templates
+    // --- API: Templates CRUD ---
     if (url.pathname === "/api/templates" && request.method === "GET") {
       const { results } = await env.DB.prepare(
         "SELECT * FROM templates ORDER BY id DESC"
       ).all();
       return withCORS(Response.json(results));
     }
-
-    // Add or update template
     if (url.pathname === "/api/templates" && request.method === "POST") {
       const { id, name, body, language, status } = await request.json();
       const now = Date.now();
@@ -1079,30 +1131,22 @@ export default {
       }
       return withCORS(Response.json({ ok: true }));
     }
-
-    // Delete template
     if (url.pathname === "/api/templates/delete" && request.method === "POST") {
       const { id } = await request.json();
       await env.DB.prepare("DELETE FROM templates WHERE id=?").bind(id).run();
       return withCORS(Response.json({ ok: true }));
     }
-
-    // Update template status (for submit, approve, reject)
     if (url.pathname === "/api/templates/status" && request.method === "POST") {
       const { id, status } = await request.json();
       await env.DB.prepare("UPDATE templates SET status=? WHERE id=?").bind(status, id).run();
       return withCORS(Response.json({ ok: true }));
     }
-
-    // Get all templates that need syncing
     if (url.pathname === "/api/templates/unsynced" && request.method === "GET") {
       const { results } = await env.DB.prepare(
         "SELECT * FROM templates WHERE synced=0 AND status='approved'"
       ).all();
       return withCORS(Response.json(results));
     }
-
-    // Sync (submit) template to WhatsApp Cloud API
     if (url.pathname === "/api/templates/sync" && request.method === "POST") {
       const { id } = await request.json();
       const tpl = await env.DB.prepare("SELECT * FROM templates WHERE id=?").bind(id).first();
