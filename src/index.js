@@ -43,6 +43,47 @@ function getFileExtension(mime_type, filename) {
   return 'bin'; // Fallback extension
 }
 
+// --- Utility function to check if a department is open ---
+async function isDepartmentOpen(env, department, now) {
+  const today = new Date(now);
+  const day = today.getDay(); // 0 (Sunday) to 6 (Saturday)
+  const currentTime = today.toLocaleTimeString('en-ZA', { hour12: false, hour: '2-digit', minute: '2-digit' }); // e.g., "17:04"
+  
+  const officeHours = await env.DB.prepare(
+    `SELECT open_time, close_time, closed FROM office_hours WHERE tag = ? AND day = ?`
+  ).bind(department, day).first();
+
+  if (!officeHours || officeHours.closed === 1) {
+    return { isOpen: false, openTime: officeHours?.open_time || "08:00" };
+  }
+
+  const [openHour, openMinute] = officeHours.open_time.split(':').map(Number);
+  const [closeHour, closeMinute] = officeHours.close_time.split(':').map(Number);
+  const [currentHour, currentMinute] = currentTime.split(':').map(Number);
+
+  const openMinutes = openHour * 60 + openMinute;
+  const closeMinutes = closeHour * 60 + closeMinute;
+  const currentMinutes = currentHour * 60 + currentMinute;
+
+  return {
+    isOpen: currentMinutes >= openMinutes && currentMinutes < closeMinutes,
+    openTime: officeHours.open_time
+  };
+}
+
+// --- Utility function to get open departments ---
+async function getOpenDepartments(env, now) {
+  const departments = ['support', 'sales', 'accounts'];
+  const openDepts = [];
+  for (const dept of departments) {
+    const { isOpen } = await isDepartmentOpen(env, dept, now);
+    if (isOpen) {
+      openDepts.push(dept.charAt(0).toUpperCase() + dept.slice(1));
+    }
+  }
+  return openDepts;
+}
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -76,10 +117,20 @@ export default {
         let media_url = null;
         let location_json = null;
 
+        // Check for emergency closure
+        const globalOffice = await env.DB.prepare(
+          `SELECT closed, message FROM office_global WHERE id = 1`
+        ).first();
+        if (globalOffice && globalOffice.closed === 1) {
+          const reply = globalOffice.message || "OFFICE CLOSED";
+          await sendWhatsAppMessage(from, reply, env);
+          return Response.json({ ok: true });
+        }
+
         // Check for duplicate message
         const existing = await env.DB.prepare(
           `SELECT id FROM messages WHERE from_number = ? AND body LIKE ? AND timestamp > ?`
-        ).bind(from, `[%${msgObj.type}%]`, now - 60000).first(); // Check last minute
+        ).bind(from, `[%${msgObj.type}%]`, now - 60000).first();
         if (existing) {
           console.log(`Duplicate message detected: msgId=${msgId}`);
           return Response.json({ ok: true });
@@ -504,6 +555,67 @@ export default {
             }
           }
 
+          // Check for SWITCH command
+          if (lc.startsWith("switch ")) {
+            const requestedDept = lc.slice(7).trim().toLowerCase();
+            const validDepts = { "support": "Support", "sales": "Sales", "accounts": "Accounts" };
+            if (!validDepts[requestedDept]) {
+              const reply = `Invalid department. Please use "SWITCH Support", "SWITCH Sales", or "SWITCH Accounts".`;
+              await sendWhatsAppMessage(from, reply, env);
+              await env.DB.prepare(
+                `INSERT OR IGNORE INTO messages (from_number, body, tag, timestamp, direction)
+                 VALUES (?, ?, 'system', ?, 'outgoing')`
+              ).bind(from, reply, now).run();
+              return Response.json({ ok: true });
+            }
+
+            const { isOpen, openTime } = await isDepartmentOpen(env, requestedDept, now);
+            if (!isOpen) {
+              const reply = `Unfortunately, our ${validDepts[requestedDept]} department is now closed and will be available again at ${openTime}. Your message has been received, and one of our agents will reply once we are available again.`;
+              await env.DB.prepare(
+                `INSERT OR IGNORE INTO messages (from_number, body, tag, timestamp, direction)
+                 VALUES (?, ?, ?, ?, 'incoming')`
+              ).bind(from, userInput, `${requestedDept}_pending`, now).run();
+              await sendWhatsAppMessage(from, reply, env);
+              await env.DB.prepare(
+                `INSERT OR IGNORE INTO messages (from_number, body, tag, timestamp, direction)
+                 VALUES (?, ?, 'system', ?, 'outgoing')`
+              ).bind(from, reply, now).run();
+              return Response.json({ ok: true });
+            }
+
+            // Close any existing session
+            const openSession = await env.DB.prepare(
+              `SELECT ticket FROM chatsessions WHERE phone = ? AND end_ts IS NULL ORDER BY start_ts DESC LIMIT 1`
+            ).bind(from).first();
+            if (openSession) {
+              await env.DB.prepare(
+                `UPDATE chatsessions SET end_ts = ? WHERE ticket = ?`
+              ).bind(now, openSession.ticket).run();
+            }
+
+            // Create new session
+            const today = new Date(now);
+            const yyyymmdd = today.toISOString().slice(0, 10).replace(/-/g, "");
+            const dayStart = Date.parse(today.toISOString().slice(0, 10) + "T00:00:00Z");
+            const dayEnd = Date.parse(today.toISOString().slice(0, 10) + "T23:59:59Z");
+            const { count = 0 } = await env.DB.prepare(
+              `SELECT COUNT(*) AS count FROM chatsessions WHERE start_ts BETWEEN ? AND ?`
+            ).bind(dayStart, dayEnd).first();
+            const session_id = `${yyyymmdd}${String(count + 1).padStart(3, '0')}`;
+            await env.DB.prepare(
+              `INSERT INTO chatsessions (phone, ticket, department, start_ts)
+               VALUES (?, ?, ?, ?)`
+            ).bind(from, session_id, requestedDept, now).run();
+            const reply = `Your chat session has been switched to our ${validDepts[requestedDept]} department (Ref: ${session_id}). Please reply with your message.`;
+            await sendWhatsAppMessage(from, reply, env);
+            await env.DB.prepare(
+              `INSERT OR IGNORE INTO messages (from_number, body, tag, timestamp, direction)
+               VALUES (?, ?, ?, ?, 'outgoing')`
+            ).bind(from, reply, requestedDept, now).run();
+            return Response.json({ ok: true });
+          }
+
           // Check for greetings
           if (greetings.includes(lc)) {
             const firstName = (customer.name || "").split(" ")[0] || "";
@@ -513,6 +625,24 @@ export default {
             ).bind(from).first();
             console.log(`Checking open session for ${from}:`, openSession);
             if (openSession) {
+              const { isOpen, openTime } = await isDepartmentOpen(env, openSession.department, now);
+              if (!isOpen) {
+                const openDepts = await getOpenDepartments(env, now);
+                const switchPrompt = openDepts.length > 0
+                  ? ` If this is an emergency, would you like to switch to our ${openDepts[0]} department, which is still open? Reply with "SWITCH ${openDepts[0]}" to proceed.`
+                  : "";
+                const reply = `Unfortunately, our ${openSession.department} department is now closed and will be available again at ${openTime}. Your message has been received, and one of our agents will reply once we are available again.${switchPrompt}`;
+                await env.DB.prepare(
+                  `INSERT OR IGNORE INTO messages (from_number, body, tag, timestamp, direction)
+                   VALUES (?, ?, ?, ?, 'incoming')`
+                ).bind(from, userInput, `${openSession.department}_pending`, now).run();
+                await sendWhatsAppMessage(from, reply, env);
+                await env.DB.prepare(
+                  `INSERT OR IGNORE INTO messages (from_number, body, tag, timestamp, direction)
+                   VALUES (?, ?, 'system', ?, 'outgoing')`
+                ).bind(from, reply, now).run();
+                return Response.json({ ok: true });
+              }
               const reply = `You are currently in a chat session with our ${openSession.department} department (Ref: ${openSession.ticket}). Reply with your message to continue, or type CLOSE to end this session and choose a different department.`;
               await sendWhatsAppMessage(from, reply, env);
               await env.DB.prepare(
@@ -540,7 +670,26 @@ export default {
           else if (userInput === "3") deptTag = "accounts";
 
           if (deptTag) {
-            const today = new Date();
+            const { isOpen, openTime } = await isDepartmentOpen(env, deptTag, now);
+            if (!isOpen) {
+              const openDepts = await getOpenDepartments(env, now);
+              const switchPrompt = openDepts.length > 0
+                ? ` If this is an emergency, would you like to switch to our ${openDepts[0]} department, which is still open? Reply with "SWITCH ${openDepts[0]}" to proceed.`
+                : "";
+              const reply = `Unfortunately, our ${deptTag} department is now closed and will be available again at ${openTime}. Your message has been received, and one of our agents will reply once we are available again.${switchPrompt}`;
+              await env.DB.prepare(
+                `INSERT OR IGNORE INTO messages (from_number, body, tag, timestamp, direction)
+                 VALUES (?, ?, ?, ?, 'incoming')`
+              ).bind(from, userInput, `${deptTag}_pending`, now).run();
+              await sendWhatsAppMessage(from, reply, env);
+              await env.DB.prepare(
+                `INSERT OR IGNORE INTO messages (from_number, body, tag, timestamp, direction)
+                 VALUES (?, ?, 'system', ?, 'outgoing')`
+              ).bind(from, reply, now).run();
+              return Response.json({ ok: true });
+            }
+
+            const today = new Date(now);
             const yyyymmdd = today.toISOString().slice(0, 10).replace(/-/g, "");
             const dayStart = Date.parse(today.toISOString().slice(0, 10) + "T00:00:00Z");
             const dayEnd = Date.parse(today.toISOString().slice(0, 10) + "T23:59:59Z");
@@ -568,6 +717,24 @@ export default {
 
           let msgTag = "customer";
           if (openSession) {
+            const { isOpen, openTime } = await isDepartmentOpen(env, openSession.department, now);
+            if (!isOpen) {
+              const openDepts = await getOpenDepartments(env, now);
+              const switchPrompt = openDepts.length > 0
+                ? ` If this is an emergency, would you like to switch to our ${openDepts[0]} department, which is still open? Reply with "SWITCH ${openDepts[0]}" to proceed.`
+                : "";
+              const reply = `Unfortunately, our ${openSession.department} department is now closed and will be available again at ${openTime}. Your message has been received, and one of our agents will reply once we are available again.${switchPrompt}`;
+              await env.DB.prepare(
+                `INSERT OR IGNORE INTO messages (from_number, body, tag, timestamp, direction, media_url, location_json)
+                 VALUES (?, ?, ?, ?, 'incoming', ?, ?)`
+              ).bind(from, userInput, `${openSession.department}_pending`, now, media_url, location_json).run();
+              await sendWhatsAppMessage(from, reply, env);
+              await env.DB.prepare(
+                `INSERT OR IGNORE INTO messages (from_number, body, tag, timestamp, direction)
+                 VALUES (?, ?, 'system', ?, 'outgoing')`
+              ).bind(from, reply, now).run();
+              return Response.json({ ok: true });
+            }
             msgTag = openSession.department;
           }
 
@@ -587,7 +754,6 @@ export default {
       }
     }
 
-    // API endpoints follow below...
     // --- API: List open chats ---
     if (url.pathname === "/api/chats" && request.method === "GET") {
       const sql = `
