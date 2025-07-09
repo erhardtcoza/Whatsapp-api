@@ -1431,7 +1431,32 @@ export default {
       const apiResult = await apiResp.json();
       return withCORS(Response.json(apiResult));
     }
+if (url.pathname === "/api/upload-clients" && request.method === "POST") {
+  const { rows } = await request.json();
+  for (const row of rows) {
+    await env.DB.prepare(`
+      INSERT INTO customers (status, customer_id, name, phone, street, zip_code, city, payment_method, balance, labels)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(customer_id) DO UPDATE SET
+        status=excluded.status,
+        name=excluded.name,
+        phone=excluded.phone,
+        street=excluded.street,
+        zip_code=excluded.zip_code,
+        city=excluded.city,
+        payment_method=excluded.payment_method,
+        balance=excluded.balance,
+        labels=excluded.labels
+    `).bind(
+      row["Status"], row["ID"], row["Full name"], row["Phone number"],
+      row["Street"], row["ZIP code"], row["City"], row["Payment Method"],
+      row["Account balance"], row["Labels"]
+    ).run();
+  }
+  return withCORS(Response.json({ ok: true }));
+}
 
+    
     // --- Serve static HTML (dashboard SPA) ---
     if (url.pathname === "/" || url.pathname === "/index.html") {
       if (env.ASSETS) {
