@@ -9,6 +9,16 @@ function withCORS(resp) {
   return resp;
 }
 
+// --- Utility function to convert ArrayBuffer to base64 ---
+function arrayBufferToBase64(buffer) {
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -97,7 +107,7 @@ export default {
                 media_url = `https://w-image.vinetdns.co.za/${r2key}`;
               } else {
                 console.warn('R2_BUCKET not configured, storing image as base64');
-                const base64Image = Buffer.from(buf).toString('base64');
+                const base64Image = arrayBufferToBase64(buf);
                 media_url = `data:image/jpeg;base64,${base64Image}`;
               }
 
