@@ -1431,11 +1431,10 @@ export default {
       const apiResult = await apiResp.json();
       return withCORS(Response.json(apiResult));
     }
-
 if (url.pathname === "/api/upload-clients" && request.method === "POST") {
   const { rows } = await request.json();
   let replaced = 0;
-  const failed = []; // ← type annotations removed!
+  const failed = [];
 
   const requiredFields = [
     "Status", "ID", "Full name", "Phone number",
@@ -1475,7 +1474,6 @@ if (url.pathname === "/api/upload-clients" && request.method === "POST") {
       replaced += 1;
     } catch (err) {
       failed.push({ idx: i + 1, reason: String(err), row });
-      // Optional: Also log the error to console for Worker logs
       console.error("Row insert/update failed", { row, error: err });
     }
   }
