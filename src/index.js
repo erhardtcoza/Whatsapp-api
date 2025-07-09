@@ -1431,6 +1431,29 @@ export default {
       const apiResult = await apiResp.json();
       return withCORS(Response.json(apiResult));
     }
+
+// --- API: List all clients with frontend-friendly column names ---
+if (url.pathname === "/api/clients" && request.method === "GET") {
+  const sql = `
+    SELECT
+      status AS Status,
+      customer_id AS ID,
+      name AS "Full name",
+      phone AS "Phone number",
+      street AS Street,
+      zip_code AS "ZIP code",
+      city AS City,
+      payment_method AS "Payment Method",
+      balance AS "Account balance",
+      labels AS Labels
+    FROM customers
+    ORDER BY name
+  `;
+  const { results } = await env.DB.prepare(sql).all();
+  return withCORS(Response.json(results));
+}
+
+    
 if (url.pathname === "/api/upload-clients" && request.method === "POST") {
   const { rows } = await request.json();
   let replaced = 0;
