@@ -7,9 +7,9 @@ binding = "DB"
 database_name = "vinet-whatsapp-db"
 database_id = "2e1228d6-b6f6-494e-b4de-9cdd508854a0"
 
-Type: R2 Bucket
-Name: R2_BUCKET
-Bucket: vinet_whatsapp_images
+[[r2_buckets]]
+binding = "R2_BUCKET"
+bucket_name = "vinet_whatsapp_images"
 
 [[kv_namespaces]]
 binding = "KV_BINDING"
