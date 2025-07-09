@@ -1435,7 +1435,7 @@ export default {
 if (url.pathname === "/api/upload-clients" && request.method === "POST") {
   const { rows } = await request.json();
   let replaced = 0;
-  const failed: { idx: number; reason: string; row: any }[] = [];
+  const failed = []; // ← type annotations removed!
 
   const requiredFields = [
     "Status", "ID", "Full name", "Phone number",
@@ -1489,6 +1489,8 @@ if (url.pathname === "/api/upload-clients" && request.method === "POST") {
       : `Upload successful: ${replaced} clients replaced.`
   }));
 }
+
+    
     
     // --- Serve static HTML (dashboard SPA) ---
     if (url.pathname === "/" || url.pathname === "/index.html") {
