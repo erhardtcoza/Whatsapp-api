@@ -250,7 +250,8 @@ export default {
                 `INSERT OR IGNORE INTO customers (phone, name, email, verified)
                  VALUES (?, '', '', 0)`
               ).bind(from).run();
-            } catch (error) {
+    }
+    catch (error) {
               console.error(`Error processing image (mediaId: ${mediaId}):`, error);
               await env.DB.prepare(
                 `INSERT OR IGNORE INTO messages (from_number, body, tag, timestamp, direction)
@@ -330,7 +331,8 @@ export default {
                 `INSERT OR IGNORE INTO customers (phone, name, email, verified)
                  VALUES (?, '', '', 0)`
               ).bind(from).run();
-            } catch (error) {
+    }
+    catch (error) {
               console.error(`Error processing document (mediaId: ${mediaId}):`, error);
               await env.DB.prepare(
                 `INSERT OR IGNORE INTO messages (from_number, body, tag, timestamp, direction)
@@ -409,7 +411,8 @@ export default {
                 `INSERT OR IGNORE INTO customers (phone, name, email, verified)
                  VALUES (?, '', '', 0)`
               ).bind(from).run();
-            } catch (error) {
+    }
+    catch (error) {
               console.error(`Error processing video (mediaId: ${mediaId}):`, error);
               await env.DB.prepare(
                 `INSERT OR IGNORE INTO messages (from_number, body, tag, timestamp, direction)
@@ -799,10 +802,11 @@ if (greetings.includes(lc)) {
         }
 
         // --- fallback ---
-
-      } catch (error) {
-        console.error('Webhook error:', error);
         return Response.json({ ok: true });
+    }
+    catch (error) {
+        console.error('Webhook error:', error);
+
       }
     }
 
