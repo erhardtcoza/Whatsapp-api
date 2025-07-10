@@ -31,6 +31,37 @@ export function isOfficeOpen(tag = "support", now = new Date()) {
   return hour >= start && hour < end;
 }
 
+export async function sendClosureMessageWithButton(env, phone, tag) {
+  const msg = `Our ${tag} team is currently unavailable. You can leave a message or come back during office hours.`;
+  const button = {
+    type: "button",
+    text: { body: msg },
+    buttons: [
+      {
+        type: "reply",
+        reply: {
+          id: "office_hours_followup",
+          title: "Remind Me Later"
+        }
+      }
+    ]
+  };
+
+  await fetch(`https://graph.facebook.com/v17.0/${env.PHONE_NUMBER_ID}/messages`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${env.WHATSAPP_TOKEN}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      messaging_product: "whatsapp",
+      to: phone,
+      type: "interactive",
+      interactive: button
+    })
+  });
+}
+
 export function getOfficeHours(tag = "support") {
   return officeHours[tag] || { start: 8, end: 17 };
 }
