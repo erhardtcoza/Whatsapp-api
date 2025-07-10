@@ -11,6 +11,11 @@ database_id = "2e1228d6-b6f6-494e-b4de-9cdd508854a0"
 binding = "R2_BUCKET"
 bucket_name = "vinet-whatsapp-images"
 
+# KV for static assets (admin panel)
+[site]
+bucket = "./public"
+entry-point = "src"
+
 [[kv_namespaces]]
 binding = "KV_BINDING"
 id = "f67b068e3dc8441a97c8c68212cb6d61"
