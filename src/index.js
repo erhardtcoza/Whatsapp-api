@@ -802,7 +802,7 @@ if (greetings.includes(lc)) {
         return Response.json({ ok: true });
       } catch (error) {
         console.error('Webhook error:', error);
-        return new Response('Internal server error', { status: 500 });
+
       }
     }
 
