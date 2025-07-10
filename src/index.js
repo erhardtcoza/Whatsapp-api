@@ -138,15 +138,12 @@ export default {
     // --- WhatsApp webhook handler (POST) ---
     if (url.pathname === "/webhook" && request.method === "POST") {
       try {
-        const payload = await request.json();
-        const msgObj = payload.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
-        if (!msgObj) return Response.json({ ok: true });
-
-        const from = msgObj.from;
-        const now = Date.now();
-        const msgId = msgObj.id; // Unique WhatsApp message ID
-        let userInput = "";
-        let media_url = null;
+        // logic here
+      } catch (error) {
+        console.error('Error:', error);
+      } finally {
+        return Response.json({ ok: true });
+      }
         let location_json = null;
 
         // Lookup customer and send greeting if verified
@@ -205,15 +202,12 @@ export default {
             await sendWhatsAppMessage(from, "Sorry, we couldn't process your image. Please try sending it again.", env);
           } else {
             try {
-              const mediaApi = `https://graph.facebook.com/v22.0/${mediaId}`;
-              const mediaMeta = await fetch(mediaApi, {
-                headers: {
-                  Authorization: `Bearer ${env.WHATSAPP_TOKEN}`,
-                  'User-Agent': 'curl/7.64.1'
-                }
-              });
-              if (!mediaMeta.ok) {
-                console.error(`Failed to fetch image metadata: ${mediaMeta.status} ${mediaMeta.statusText}`);
+        // logic here
+      } catch (error) {
+        console.error('Error:', error);
+      } finally {
+        return Response.json({ ok: true });
+      }
                 throw new Error(`Image metadata fetch failed: ${mediaMeta.status}`);
               }
               const mediaData = await mediaMeta.json();
@@ -285,15 +279,12 @@ export default {
             await sendWhatsAppMessage(from, "Sorry, we couldn't process your document. Please try sending it again.", env);
           } else {
             try {
-              const mediaApi = `https://graph.facebook.com/v22.0/${mediaId}`;
-              const mediaMeta = await fetch(mediaApi, {
-                headers: {
-                  Authorization: `Bearer ${env.WHATSAPP_TOKEN}`,
-                  'User-Agent': 'curl/7.64.1'
-                }
-              });
-              if (!mediaMeta.ok) {
-                console.error(`Failed to fetch document metadata: ${mediaMeta.status} ${mediaMeta.statusText}`);
+        // logic here
+      } catch (error) {
+        console.error('Error:', error);
+      } finally {
+        return Response.json({ ok: true });
+      }
                 throw new Error(`Document metadata fetch failed: ${mediaMeta.status}`);
               }
               const mediaData = await mediaMeta.json();
@@ -365,15 +356,12 @@ export default {
             await sendWhatsAppMessage(from, "Sorry, we couldn't process your video. Please try sending it again.", env);
           } else {
             try {
-              const mediaApi = `https://graph.facebook.com/v22.0/${mediaId}`;
-              const mediaMeta = await fetch(mediaApi, {
-                headers: {
-                  Authorization: `Bearer ${env.WHATSAPP_TOKEN}`,
-                  'User-Agent': 'curl/7.64.1'
-                }
-              });
-              if (!mediaMeta.ok) {
-                console.error(`Failed to fetch video metadata: ${mediaMeta.status} ${mediaMeta.statusText}`);
+        // logic here
+      } catch (error) {
+        console.error('Error:', error);
+      } finally {
+        return Response.json({ ok: true });
+      }
                 throw new Error(`Video metadata fetch failed: ${mediaMeta.status}`);
               }
               const mediaData = await mediaMeta.json();
@@ -455,15 +443,12 @@ export default {
         // Onboarding state from DB
         let state = null;
         try {
-          let st = await env.DB.prepare(`SELECT * FROM onboarding WHERE phone = ?`).bind(from).first();
-          state = st?.step || null;
-        } catch { state = null; }
-
-        // --- Onboarding and lead flow ---
-        if (!customer || customer.verified !== 1) {
-          // Check leads office hours
-          const { isOpen, openTime } = await isDepartmentOpen(env, 'leads', now);
-          if (!isOpen) {
+        // logic here
+      } catch (error) {
+        console.error('Error:', error);
+      } finally {
+        return Response.json({ ok: true });
+      }
             const reply = `Unfortunately, our leads department is now closed and will be available again at ${openTime}. Your message has been received, and one of our agents will reply once we are available again.`;
             await env.DB.prepare(
               `INSERT OR IGNORE INTO messages (from_number, body, tag, timestamp, direction, media_url, location_json)
@@ -1472,15 +1457,12 @@ if (greetings.includes(lc)) {
         }
 
         try {
-          await env.DB.prepare(`
-            INSERT INTO customers (status, customer_id, name, phone, street, zip_code, city, payment_method, balance, labels)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(customer_id) DO UPDATE SET
-              status=excluded.status,
-              name=excluded.name,
-              phone=excluded.phone,
-              street=excluded.street,
-              zip_code=excluded.zip_code,
+        // logic here
+      } catch (error) {
+        console.error('Error:', error);
+      } finally {
+        return Response.json({ ok: true });
+      }
               city=excluded.city,
               payment_method=excluded.payment_method,
               balance=excluded.balance,
