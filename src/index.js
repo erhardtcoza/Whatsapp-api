@@ -1450,26 +1450,35 @@ export default {
       return withCORS(Response.json(apiResult));
     }
 
-    // --- API: List all clients with frontend-friendly column names ---
+
+    // --- API: List clients ---
     if (url.pathname === "/api/clients" && request.method === "GET") {
-      const sql = `
-        SELECT
-          status AS Status,
-          customer_id AS ID,
-          name AS "Full name",
-          phone AS "Phone number",
-          street AS Street,
-          zip_code AS "ZIP code",
-          city AS City,
-          payment_method AS "Payment Method",
-          balance AS "Account balance",
-          labels AS Labels
-        FROM customers
-        ORDER BY name
-      `;
-      const { results } = await env.DB.prepare(sql).all();
-      return withCORS(Response.json(results));
+      try {
+        const verifiedFilter = url.searchParams.get("verified") === "1" ? "WHERE verified = 1" : "";
+        const sql = `
+          SELECT
+            status AS Status,
+            customer_id AS ID,
+            name AS "Full name",
+            phone AS "Phone number",
+            street AS Street,
+            zip_code AS "ZIP code",
+            city AS City,
+            payment_method AS "Payment Method",
+            balance AS "Account balance",
+            labels AS Labels
+          FROM customers
+          ${verifiedFilter}
+          ORDER BY name
+        `;
+        const { results } = await env.DB.prepare(sql).all();
+        return withCORS(Response.json(results || []));
+      } catch (error) {
+        console.error(`Error fetching clients: ${error.message}`);
+        return withCORS(Response.json({ error: `Failed to fetch clients: ${error.message}` }, { status: 500 }));
+      }
     }
+
 
     if (url.pathname === "/api/upload-clients" && request.method === "POST") {
       const { rows } = await request.json();
