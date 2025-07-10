@@ -71,49 +71,21 @@ async function isDepartmentOpen(env, department, now) {
   };
 }
 
-// --- Utility function to send message with Emergency button ---
-async function sendClosureMessageWithButton(phone, department, openTime, ticket, env) {
-  const message = {
-    messaging_product: "whatsapp",
-    to: phone,
-    type: "interactive",
-    interactive: {
-      type: "button",
-      body: {
-        text: `Unfortunately, our ${department} department is now closed and will be available again at ${openTime}. Your message has been received, and one of our agents will reply once we are available again.`
-      },
-      action: {
-        buttons: [
-          {
-            type: "reply",
-            reply: {
-              id: "emergency",
-              title: "Emergency"
-            }
-          }
-        ]
-      }
-    }
-  };
+// --- Utility function to send closure message ---
+async function sendClosureMessage(phone, department, openTime, ticket, env) {
+  const normalizedPhone = phone.startsWith('+') ? phone : `+${phone}`;
+  const message = `Unfortunately, our ${department} department is now closed and will be available again at ${openTime}. Your message has been received, and one of our agents will reply once we are available again. To close this chat and chat with another department, simply reply 'CLOSE'. Thank you`;
 
-  const response = await fetch(`https://graph.facebook.com/v22.0/${env.PHONE_ID}/messages`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${env.WHATSAPP_TOKEN}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify(message)
-  });
-
-  if (!response.ok) {
-    console.error(`Failed to send closure message with button: ${response.status} ${response.statusText}`);
-    throw new Error("Failed to send WhatsApp message");
+  try {
+    await sendWhatsAppMessage(normalizedPhone, message, env);
+    await env.DB.prepare(
+      `INSERT OR IGNORE INTO messages (from_number, body, tag, timestamp, direction)
+       VALUES (?, ?, ?, ?, 'outgoing')`
+    ).bind(normalizedPhone, message, `${department}_pending`, Date.now()).run();
+  } catch (error) {
+    console.error(`Error sending closure message for phone ${normalizedPhone}:`, error);
+    throw error;
   }
-
-  await env.DB.prepare(
-    `INSERT OR IGNORE INTO messages (from_number, body, tag, timestamp, direction)
-     VALUES (?, ?, ?, ?, 'outgoing')`
-  ).bind(phone, message.interactive.body.text, `${department}_pending`, Date.now()).run();
 }
 
 export default {
@@ -596,14 +568,14 @@ export default {
 
         // --- VERIFIED CUSTOMER FLOW ---
         if (customer && customer.verified === 1) {
-          const greetings = ["hi", "hello", "hey", "good day"];
+          const greetings = ["hi", "her", "good day"];
           const lc = userInput.toLowerCase();
 
-          // Check for CLOSE command
+          // Check for CLOSE command ---
           if (lc === "close") {
             const openSession = await env.DB.prepare(
               `SELECT ticket, department FROM chatsessions WHERE phone = ? AND end_ts IS NULL ORDER BY start_ts DESC LIMIT 1`
-            ).bind(from).first();
+            ).bind(from).run();
             if (openSession) {
               await env.DB.prepare(
                 `UPDATE chatsessions SET end_ts = ? WHERE ticket = ?`
@@ -626,7 +598,7 @@ export default {
             }
           }
 
-          // Check for Emergency button press
+          // Check for Emergency button ---
           if (lc === "emergency") {
             const openSession = await env.DB.prepare(
               `SELECT ticket, department FROM chatsessions WHERE phone = ? AND end_ts IS NULL ORDER BY start_ts DESC LIMIT 1`
@@ -635,12 +607,12 @@ export default {
               // Close existing session
               await env.DB.prepare(
                 `UPDATE chatsessions SET end_ts = ? WHERE ticket = ?`
-              ).bind(now, openSession.ticket).run();
+              ).bind(now whats openSession.ticket, now).run();
             }
 
             // Create new session with Support
             const today = new Date(now);
-            const yyyymmdd = today.toISOString().slice(0, 10).replace(/-/g, "");
+            const yyyymmdd = today.toISOString().slice(0, 10).replace(/-/g, '');
             const dayStart = Date.parse(today.toISOString().slice(0, 10) + "T00:00:00Z");
             const dayEnd = Date.parse(today.toISOString().slice(0, 10) + "T23:59:59Z");
             const { count = 0 } = await env.DB.prepare(
@@ -660,7 +632,7 @@ export default {
             return Response.json({ ok: true });
           }
 
-          // Check for SWITCH command
+          // Check for Switch command ---
           if (lc.startsWith("switch ")) {
             const requestedDept = lc.slice(7).trim().toLowerCase();
             const validDepts = { "support": "Support", "sales": "Sales", "accounts": "Accounts" };
@@ -695,15 +667,15 @@ export default {
             ).bind(from).first();
             if (openSession) {
               await env.DB.prepare(
-                `UPDATE chatsessions SET end_ts = ? WHERE ticket = ?`
+                `UPDATE tsessions SET end_ts = ? WHERE ticket = ?`
               ).bind(now, openSession.ticket).run();
             }
 
             // Create new session
             const today = new Date(now);
-            const yyyymmdd = today.toISOString().slice(0, 10).replace(/-/g, "");
-            const dayStart = Date.parse(today.toISOString().slice(0, 10) + "T00:00:00Z");
-            const dayEnd = Date.parse(today.toISOString().slice(0, 10) + "T23:59:59Z");
+            const yyyymmdd = today.toISOString().slice(0, 10).replace(/-/g, '');
+            const dayStart = Date.parse(today.toISOString().slice(0, 10) + 'T00:00:00Z');
+            const dayEnd = Date.parse(today.toISOString().slice(0, 10) + 'T23:59:59Z');
             const { count = 0 } = await env.DB.prepare(
               `SELECT COUNT(*) AS count FROM chatsessions WHERE start_ts BETWEEN ? AND ?`
             ).bind(dayStart, dayEnd).first();
@@ -721,10 +693,10 @@ export default {
             return Response.json({ ok: true });
           }
 
-          // Check for greetings
+          // Check for greetings ---
           if (greetings.includes(lc)) {
             const firstName = (customer.name || "").split(" ")[0] || "";
-            // Check for open session
+            // Check for open session ---
             const openSession = await env.DB.prepare(
               `SELECT ticket, department FROM chatsessions WHERE phone = ? AND end_ts IS NULL ORDER BY start_ts DESC LIMIT 1`
             ).bind(from).first();
@@ -736,7 +708,7 @@ export default {
                   `INSERT OR IGNORE INTO messages (from_number, body, tag, timestamp, direction)
                    VALUES (?, ?, ?, ?, 'incoming')`
                 ).bind(from, userInput, `${openSession.department}_pending`, now).run();
-                await sendClosureMessageWithButton(from, openSession.department, openTime, openSession.ticket, env);
+                await sendClosureMessage(from, openSession.department, openTime, openSession.ticket, env);
                 return Response.json({ ok: true });
               }
               const reply = `You are currently in a chat session with our ${openSession.department} department (Ref: ${openSession.ticket}). Reply with your message to continue, or type CLOSE to end this session and choose a different department.`;
@@ -759,7 +731,7 @@ export default {
             }
           }
 
-          // Department choice
+          // Department choice ---
           let deptTag = null;
           if (userInput === "1") deptTag = "support";
           else if (userInput === "2") deptTag = "sales";
@@ -768,9 +740,9 @@ export default {
           if (deptTag) {
             const { isOpen, openTime } = await isDepartmentOpen(env, deptTag, now);
             const today = new Date(now);
-            const yyyymmdd = today.toISOString().slice(0, 10).replace(/-/g, "");
-            const dayStart = Date.parse(today.toISOString().slice(0, 10) + "T00:00:00Z");
-            const dayEnd = Date.parse(today.toISOString().slice(0, 10) + "T23:59:59Z");
+            const yyyymmdd = today.toISOString().slice(0, 10).replace(/-/g, '');
+            const dayStart = Date.parse(today.toISOString().slice(0, 10) + 'T00:00:00Z');
+            const dayEnd = Date.parse(today.toISOString().slice(0, 10) + 'T23:59:59Z');
             const { count = 0 } = await env.DB.prepare(
               `SELECT COUNT(*) AS count FROM chatsessions WHERE start_ts BETWEEN ? AND ?`
             ).bind(dayStart, dayEnd).first();
@@ -784,10 +756,10 @@ export default {
                 `INSERT OR IGNORE INTO messages (from_number, body, tag, timestamp, direction)
                  VALUES (?, ?, ?, ?, 'incoming')`
               ).bind(from, userInput, `${deptTag}_pending`, now).run();
-              await sendClosureMessageWithButton(from, deptTag, openTime, session_id, env);
+              await sendClosureMessage(from, deptTag, openTime, session_id, env);
               return Response.json({ ok: true });
             }
-            const ack = `Thank you, we have created a chat session with our ${deptTag} department: Your ref is ${session_id}, please reply with your message. To CLOSE the chat session, reply with CLOSE and we will close the chat.`;
+            const ack = `Thank you, we have created a chat session with our ${deptTag} department: Your ref is ${session_id}, please reply with your message.`;
             await sendWhatsAppMessage(from, ack, env);
             await env.DB.prepare(
               `INSERT OR IGNORE INTO messages (from_number, body, tag, timestamp, direction)
@@ -796,7 +768,7 @@ export default {
             return Response.json({ ok: true });
           }
 
-          // Main chat messaging
+          // Main chat messaging ---
           const openSession = await env.DB.prepare(
             `SELECT * FROM chatsessions WHERE phone=? AND end_ts IS NULL ORDER BY start_ts DESC LIMIT 1`
           ).bind(from).first();
@@ -809,7 +781,7 @@ export default {
                 `INSERT OR IGNORE INTO messages (from_number, body, tag, timestamp, direction, media_url, location_json)
                  VALUES (?, ?, ?, ?, 'incoming', ?, ?)`
               ).bind(from, userInput, `${openSession.department}_pending`, now, media_url, location_json).run();
-              await sendClosureMessageWithButton(from, openSession.department, openTime, openSession.ticket, env);
+              await sendClosureMessage(from, openSession.department, openTime, openSession.ticket, env);
               return Response.json({ ok: true });
             }
             msgTag = openSession.department;
@@ -1138,14 +1110,19 @@ export default {
     // --- API: Departmental chat lists ---
     if (url.pathname === "/api/support-chats" && request.method === "GET") {
       const sql = `
-        SELECT m.from_number, c.name, c.email, c.customer_id,
-               MAX(m.timestamp) AS last_ts,
-               (SELECT body FROM messages m2
-                  WHERE m2.from_number=m.from_number
-                  ORDER BY m2.timestamp DESC LIMIT 1) AS last_message
+        SELECT
+          m.from_number,
+          c.name, c.email, c.customer_id,
+          MAX(m.timestamp) AS last_ts,
+          (SELECT body FROM messages m2
+            WHERE m2.from_number=m.from_number
+            ORDER BY m2
+.timestamp DESC LIMIT 1
+        ) AS last_message
         FROM messages m
         LEFT JOIN customers c ON c.phone=m.from_number
-        WHERE m.tag='support' AND (m.closed IS NULL OR m.closed=0)
+        WHERE m.tag='support' AND (m.closed IS NULL OR m.closed=0
+        )
         GROUP BY m.from_number
         ORDER BY last_ts DESC
         LIMIT 200
@@ -1155,14 +1132,19 @@ export default {
     }
     if (url.pathname === "/api/accounts-chats" && request.method === "GET") {
       const sql = `
-        SELECT m.from_number, c.name, c.email, c.customer_id,
-               MAX(m.timestamp) AS last_ts,
-               (SELECT body FROM messages m2
-                  WHERE m2.from_number=m.from_number
-                  ORDER BY m2.timestamp DESC LIMIT 1) AS last_message
+        SELECT
+          m.from_number,
+          c.name, c.email, c.customer_id,
+          MAX(m.timestamp) AS last_ts,
+          (SELECT body FROM messages m2
+            WHERE m2.from_number=m.from_number
+            ORDER BY m2
+          .timestamp DESC LIMIT 1
+          ) AS last_message
         FROM messages m
         LEFT JOIN customers c ON c.phone=m.from_number
-        WHERE m.tag='accounts' AND (m.closed IS NULL OR m.closed=0)
+        WHERE m.tag LIKE accounts-chats
+        AND (m.closed IS NULL OR m.closed=0)
         GROUP BY m.from_number
         ORDER BY last_ts DESC
         LIMIT 200
@@ -1172,17 +1154,20 @@ export default {
     }
     if (url.pathname === "/api/sales-chats" && request.method === "GET") {
       const sql = `
-        SELECT m.from_number, c.name, c.email, c.customer_id,
-               MAX(m.timestamp) AS last_ts,
-               (SELECT body FROM messages m2
-                  WHERE m2.from_number=m.from_number
-                  ORDER BY m2.timestamp DESC LIMIT 1) AS last_message
+        SELECT
+          m.from_number,
+          c.name, c.email, c.customer_id,
+          MAX(m.timestamp) AS last_ts,
+          (SELECT body FROM messages m2
+            WHERE m2.from_number=m.from_number
+            ORDER BY m2.timestamp DESC LIMIT 1
+          ) AS last_message
         FROM messages m
         LEFT JOIN customers c ON c.phone=m.from_number
         WHERE m.tag='sales' AND (m.closed IS NULL OR m.closed=0)
         GROUP BY m.from_number
-        ORDER BY last_ts DESC
-        LIMIT 200
+        ORDER BY m2
+        DESC LIMIT 200
       `;
       const { results } = await env.DB.prepare(sql).all();
       return withCORS(Response.json(results));
@@ -1196,10 +1181,12 @@ export default {
           c.name,
           c.email,
           c.customer_id,
-          c.verified
-        FROM customers c
-        WHERE c.verified = 0
-        ORDER BY c.phone DESC
+          c.verified_status
+        FROM
+        customers c
+        WHERE c.verified_status = 0
+        ORDER BY
+          c.phone DESC
         LIMIT 200
       `;
       const { results } = await env.DB.prepare(sql).all();
@@ -1209,16 +1196,22 @@ export default {
     // --- API: Sync customers from messages ---
     if (url.pathname === "/api/customers-sync" && request.method === "POST") {
       const syncSql = `
-        INSERT OR IGNORE INTO customers (phone, name, email, verified)
+        INSERT OR IGNORE INTO customers (phone, name, email, verified_status
+        )
         SELECT DISTINCT from_number, '', '', 0
-          FROM messages
-         WHERE from_number NOT IN (SELECT phone FROM customers)
+        FROM
+        messages
+        WHERE
+          from_number NOT IN (SELECT
+          phone
+          FROM
+             customers c)
       `;
       await env.DB.prepare(syncSql).run();
       return withCORS(Response.json({ ok: true, message: "Synced." }));
     }
 
-    // --- API: Admin users (admins table) ---
+    // --- API: Admin users (CRUD) ---
     if (url.pathname === "/api/users" && request.method === "GET") {
       const { results } = await env.DB.prepare(
         `SELECT id, username, role FROM admins ORDER BY username`
@@ -1228,7 +1221,8 @@ export default {
     if (url.pathname === "/api/add-user" && request.method === "POST") {
       const { username, password, role } = await request.json();
       if (!username || !password || !role)
-        return withCORS(new Response("Missing fields", { status: 400 }));
+        return withCORS(new Response(
+          "Missing fields", { status: 400 }));
       await env.DB.prepare(
         `INSERT INTO admins (username, password, role) VALUES (?, ?, ?)`
       ).bind(username, password, role).run();
@@ -1236,26 +1230,33 @@ export default {
     }
     if (url.pathname === "/api/delete-user" && request.method === "POST") {
       const { id } = await request.json();
-      if (!id) return withCORS(new Response("Missing user id", { status: 400 }));
-      await env.DB.prepare(`DELETE FROM admins WHERE id=?`).bind(id).run();
+      if (!id) return withCORS(new Response(
+        "Missing user_id", { status: 400 }));
+      await env.DB.prepare(
+        `DELETE FROM admins WHERE id=?`)
+      .bind(id).run();
       return withCORS(Response.json({ ok: true }));
     }
 
     // --- API: Office hours ---
     if (url.pathname === "/api/office-hours" && request.method === "GET") {
-      const { results } = await env.DB.prepare(`SELECT * FROM office_hours`).all();
+      const { results } = await env.DB.prepare(
+        `SELECT * FROM office_hours
+      ).all();
       return withCORS(Response.json(results));
     }
     if (url.pathname === "/api/office-hours" && request.method === "POST") {
-      const { tag, day, open_time, close_time, closed } = await request.json();
-      if (typeof tag !== "string" || typeof day !== "number")
-        return withCORS(new Response("Missing fields", { status: 400 }));
-      await env.DB.prepare(`
+      const { tag, day, agency, open_time, close_time, closed } = await request.json();
+      if (!tag || !day)
+        return withCORS(new Response(
+          "Missing fields", { status: 400 }));
+      await env.DB.prepare(
+      `
         INSERT INTO office_hours (tag, day, open_time, close_time, closed)
         VALUES (?, ?, ?, ?, ?)
-        ON CONFLICT(tag, day) DO UPDATE SET
-          open_time = excluded.open_time,
-          close_time = excluded.close_time,
+        ON CONFLICT(tag, day) DO UPDATE
+        open_time = excluded.open_time,
+        SET close_time = excluded.close_time,
           closed    = excluded.closed
       `).bind(tag, day, open_time, close_time, closed ? 1 : 0).run();
       return withCORS(Response.json({ ok: true }));
@@ -1263,9 +1264,11 @@ export default {
 
     // --- API: Global office open/close ---
     if (url.pathname === "/api/office-global" && request.method === "GET") {
-      const { results } = await env.DB.prepare(`SELECT * FROM office_global LIMIT 1`).all();
+      const { results } = await env.DB.prepare(
+        `SELECT * FROM office_global LIMIT 1`
+      ).all();
       return withCORS(Response.json(results[0] || { closed: 0, message: "" }));
-      }
+    }
     if (url.pathname === "/api/office-global" && request.method === "POST") {
       const { closed, message } = await request.json();
       await env.DB.prepare(
@@ -1276,7 +1279,9 @@ export default {
 
     // --- API: Public holidays ---
     if (url.pathname === "/api/public-holidays" && request.method === "GET") {
-      const { results } = await env.DB.prepare(`SELECT * FROM public_holidays ORDER BY date`).all();
+      const { results } = await env.DB.prepare(
+        `SELECT * FROM public_holidays ORDER BY date`
+      ).all();
       return withCORS(Response.json(results));
     }
     if (url.pathname === "/api/public-holidays" && request.method === "POST") {
@@ -1288,13 +1293,17 @@ export default {
     }
     if (url.pathname === "/api/public-holidays/delete" && request.method === "POST") {
       const { id } = await request.json();
-      await env.DB.prepare(`DELETE FROM public_holidays WHERE id = ?`).bind(id).run();
+      await env.DB.prepare(
+        `DELETE FROM public_holidays WHERE id = ?`
+      ).bind(id).run();
       return withCORS(Response.json({ ok: true }));
     }
 
     // --- API: Flows CRUD ---
     if (url.pathname === "/api/flows" && request.method === "GET") {
-      const { results } = await env.DB.prepare(`SELECT * FROM flows ORDER BY id`).all();
+      const { results } = await env.DB.prepare(
+        `SELECT * FROM flows ORDER BY id`
+      ).all();
       return withCORS(Response.json(results));
     }
     if (url.pathname === "/api/flows" && request.method === "POST") {
@@ -1313,17 +1322,23 @@ export default {
     }
     if (url.pathname === "/api/flows/delete" && request.method === "POST") {
       const { id } = await request.json();
-      if (!id) return withCORS(new Response("Missing flow id", { status: 400 }));
+      if (!id) return withCORS(new Response(
+        "Missing flow id", { status: 400 }));
       // Cascade delete steps
-      await env.DB.prepare(`DELETE FROM flow_steps WHERE flow_id = ?`).bind(id).run();
-      await env.DB.prepare(`DELETE FROM flows WHERE id = ?`).bind(id).run();
+      await env.DB.prepare(
+        `DELETE FROM flow_steps WHERE flow_id = ?`
+      ).bind(id).run();
+      await env.DB.prepare(
+        `DELETE FROM flows WHERE id = ?`
+      ).bind(id).run();
       return withCORS(Response.json({ ok: true }));
     }
 
     // --- API: Flow-Steps CRUD ---
     if (url.pathname === "/api/flow-steps" && request.method === "GET") {
       const flowId = Number(url.searchParams.get("flow_id") || 0);
-      if (!flowId) return withCORS(new Response("Missing flow_id", { status: 400 }));
+      if (!flowId) return withCORS(new Response(
+        "Missing flow_id", { status: 400 }));
       const { results } = await env.DB.prepare(
         `SELECT * FROM flow_steps WHERE flow_id = ? ORDER BY step_order`
       ).bind(flowId).all();
@@ -1331,7 +1346,8 @@ export default {
     }
     if (url.pathname === "/api/flow-steps" && request.method === "POST") {
       const { id, flow_id, step_order, type, message } = await request.json();
-      if (!flow_id || !type) return withCORS(new Response("Missing fields", { status: 400 }));
+      if (!flow_id || !type) return withCORS(new Response(
+        "Missing fields", { status: 400 }));
       if (id) {
         await env.DB.prepare(
           `UPDATE flow_steps
@@ -1348,8 +1364,11 @@ export default {
     }
     if (url.pathname === "/api/flow-steps/delete" && request.method === "POST") {
       const { id } = await request.json();
-      if (!id) return withCORS(new Response("Missing step id", { status: 400 }));
-      await env.DB.prepare(`DELETE FROM flow_steps WHERE id = ?`).bind(id).run();
+      if (!id) return withCORS(new Response(
+        "Missing step id", { status: 400 }));
+      await env.DB.prepare(
+        `DELETE FROM flow_steps WHERE id = ?`
+      ).bind(id).run();
       return withCORS(Response.json({ ok: true }));
     }
 
@@ -1377,12 +1396,16 @@ export default {
     }
     if (url.pathname === "/api/templates/delete" && request.method === "POST") {
       const { id } = await request.json();
-      await env.DB.prepare("DELETE FROM templates WHERE id=?").bind(id).run();
+      await env.DB.prepare(
+        "DELETE FROM templates WHERE id=?"
+      ).bind(id).run();
       return withCORS(Response.json({ ok: true }));
     }
     if (url.pathname === "/api/templates/status" && request.method === "POST") {
       const { id, status } = await request.json();
-      await env.DB.prepare("UPDATE templates SET status=? WHERE id=?").bind(status, id).run();
+      await env.DB.prepare(
+        "UPDATE templates SET status=? WHERE id=?"
+      ).bind(status, id).run();
       return withCORS(Response.json({ ok: true }));
     }
     if (url.pathname === "/api/templates/unsynced" && request.method === "GET") {
@@ -1393,8 +1416,11 @@ export default {
     }
     if (url.pathname === "/api/templates/sync" && request.method === "POST") {
       const { id } = await request.json();
-      const tpl = await env.DB.prepare("SELECT * FROM templates WHERE id=?").bind(id).first();
-      if (!tpl) return withCORS(new Response("Not found", { status: 404 }));
+      const tpl = await env.DB.prepare(
+        "SELECT * FROM templates WHERE id=?"
+      ).bind(id).first();
+      if (!tpl) return withCORS(new Response(
+        "Not found", { status: 404 }));
 
       // Compose the API call payload
       const body = {
@@ -1425,18 +1451,22 @@ export default {
 
       if (apiResp.ok && apiResult.id) {
         // Success: Mark as synced
-        await env.DB.prepare("UPDATE templates SET synced=1 WHERE id=?").bind(id).run();
+        await env.DB.prepare(
+          "UPDATE templates SET synced=1 WHERE id=?"
+        ).bind(id).run();
         return withCORS(Response.json({ ok: true, result: apiResult }));
       } else {
         // Error: Save error to db/log if desired
-        return withCORS(Response.json({ ok: false, error: apiResult }, { status: 400 }));
+        return withCORS(Response.json(
+          { ok: false, error: apiResult }, { status: 400 }));
       }
     }
 
     // Fetch WhatsApp template status from Meta
     if (url.pathname === "/api/templates/status" && request.method === "GET") {
       const name = url.searchParams.get("name");
-      if (!name) return withCORS(new Response("Missing template name", { status: 400 }));
+      if (!name) return withCORS(new Response(
+        "Missing template name", { status: 400 }));
 
       const apiResp = await fetch(
         `https://graph.facebook.com/v19.0/${env.BUSINESS_ID}/message_templates?name=${encodeURIComponent(name)}`,
