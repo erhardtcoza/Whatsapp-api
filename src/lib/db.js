@@ -102,3 +102,11 @@ export const DB = {
     );
   },
 };
+export async function handleIncomingMessage(env, phone, msg, tag = "unverified") {
+  const now = Date.now();
+  const stmt = await env.DB.prepare(`
+    INSERT INTO messages (from_number, body, tag, timestamp, direction)
+    VALUES (?, ?, ?, ?, 'incoming')
+  `).bind(phone, msg, tag, now).run();
+  return stmt;
+}
