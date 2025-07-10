@@ -598,41 +598,41 @@ export default {
             }
           }
 
-          // Check for Emergency button ---
-          if (lc === "emergency") {
-            const openSession = await env.DB.prepare(
-              `SELECT ticket, department FROM chatsessions WHERE phone = ? AND end_ts IS NULL ORDER BY start_ts DESC LIMIT 1`
-            ).bind(from).first();
-            if (openSession) {
-              // Close existing session
-              await env.DB.prepare(
-                `UPDATE chatsessions SET end_ts = ? WHERE ticket = ?`
-              ).bind(now whats openSession.ticket, now).run();
-            }
+// Check for Emergency button ---
+if (lc === "emergency") {
+  const openSession = await env.DB.prepare(
+    `SELECT ticket, department FROM chatsessions WHERE phone = ? AND end_ts IS NULL ORDER BY start_ts DESC LIMIT 1`
+  ).bind(from).first();
+  if (openSession) {
+    // Close existing session
+    await env.DB.prepare(
+      `UPDATE chatsessions SET end_ts = ? WHERE ticket = ?`
+    ).bind(now, openSession.ticket).run();
+  }
 
-            // Create new session with Support
-            const today = new Date(now);
-            const yyyymmdd = today.toISOString().slice(0, 10).replace(/-/g, '');
-            const dayStart = Date.parse(today.toISOString().slice(0, 10) + "T00:00:00Z");
-            const dayEnd = Date.parse(today.toISOString().slice(0, 10) + "T23:59:59Z");
-            const { count = 0 } = await env.DB.prepare(
-              `SELECT COUNT(*) AS count FROM chatsessions WHERE start_ts BETWEEN ? AND ?`
-            ).bind(dayStart, dayEnd).first();
-            const session_id = `${yyyymmdd}${String(count + 1).padStart(3, '0')}`;
-            await env.DB.prepare(
-              `INSERT INTO chatsessions (phone, ticket, department, start_ts)
-               VALUES (?, ?, ?, ?)`
-            ).bind(from, session_id, 'support', now).run();
-            const reply = `Your chat session has been switched to our Support department (Ref: ${session_id}). Please reply with your message.`;
-            await sendWhatsAppMessage(from, reply, env);
-            await env.DB.prepare(
-              `INSERT OR IGNORE INTO messages (from_number, body, tag, timestamp, direction)
-               VALUES (?, ?, ?, ?, 'outgoing')`
-            ).bind(from, reply, 'support', now).run();
-            return Response.json({ ok: true });
-          }
-
-          // Check for Switch command ---
+  // Create new session with Support
+  const today = new Date(now);
+  const yyyymmdd = today.toISOString().slice(0, 10).replace(/-/g, '');
+  const dayStart = Date.parse(today.toISOString().slice(0, 10) + "T00:00:00Z");
+  const dayEnd = Date.parse(today.toISOString().slice(0, 10) + "T23:59:59Z");
+  const { count = 0 } = await env.DB.prepare(
+    `SELECT COUNT(*) AS count FROM chatsessions WHERE start_ts BETWEEN ? AND ?`
+  ).bind(dayStart, dayEnd).first();
+  const session_id = `${yyyymmdd}${String(count + 1).padStart(3, '0')}`;
+  await env.DB.prepare(
+    `INSERT INTO chatsessions (phone, ticket, department, start_ts)
+     VALUES (?, ?, ?, ?)`
+  ).bind(from, session_id, 'support', now).run();
+  const reply = `Your chat session has been switched to our Support department (Ref: ${session_id}). Please reply with your message.`;
+  await sendWhatsAppMessage(from, reply, env);
+  await env.DB.prepare(
+    `INSERT OR IGNORE INTO messages (from_number, body, tag, timestamp, direction)
+     VALUES (?, ?, ?, ?, 'outgoing')`
+  ).bind(from, reply, 'support', now).run();
+  return Response.json({ ok: true });
+}
+          
+        // Check for Switch command ---
           if (lc.startsWith("switch ")) {
             const requestedDept = lc.slice(7).trim().toLowerCase();
             const validDepts = { "support": "Support", "sales": "Sales", "accounts": "Accounts" };
