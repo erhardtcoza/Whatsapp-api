@@ -138,25 +138,16 @@ export default {
     // --- WhatsApp webhook handler (POST) ---
     if (url.pathname === "/webhook" && request.method === "POST") {
       try {
-        // logic here
-      } catch (error) {
-        console.error('Error:', error);
-      } finally {
-        return Response.json({ ok: true });
-      }
-        let location_json = null;
+        const payload = await request.json();
+        const msgObj = payload.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
+        if (!msgObj) return Response.json({ ok: true });
 
-        // Lookup customer and send greeting if verified
-        let customer = await env.DB.prepare(`SELECT name, verified FROM customers WHERE phone = ?`).bind(from).first();
-        if (customer && customer.verified === 1) {
-          const firstName = (customer.name || "").split(" ")[0] || "";
-          const greeting = `Hello ${firstName}, welcome back! How can we assist you today?`;
-          await sendWhatsAppMessage(from, greeting, env);
-          await env.DB.prepare(
-            `INSERT OR IGNORE INTO messages (from_number, body, tag, timestamp, direction)
-             VALUES (?, ?, 'system', ?, 'outgoing')`
-          ).bind(from, greeting, now).run();
-        }
+        const from = msgObj.from;
+        const now = Date.now();
+        const msgId = msgObj.id; // Unique WhatsApp message ID
+        let userInput = "";
+        let media_url = null;
+        let location_json = null;
 
         // Check for emergency closure
         const globalOffice = await env.DB.prepare(
@@ -202,12 +193,15 @@ export default {
             await sendWhatsAppMessage(from, "Sorry, we couldn't process your image. Please try sending it again.", env);
           } else {
             try {
-        // logic here
-      } catch (error) {
-        console.error('Error:', error);
-      } finally {
-        return Response.json({ ok: true });
-      }
+              const mediaApi = `https://graph.facebook.com/v22.0/${mediaId}`;
+              const mediaMeta = await fetch(mediaApi, {
+                headers: {
+                  Authorization: `Bearer ${env.WHATSAPP_TOKEN}`,
+                  'User-Agent': 'curl/7.64.1'
+                }
+              });
+              if (!mediaMeta.ok) {
+                console.error(`Failed to fetch image metadata: ${mediaMeta.status} ${mediaMeta.statusText}`);
                 throw new Error(`Image metadata fetch failed: ${mediaMeta.status}`);
               }
               const mediaData = await mediaMeta.json();
@@ -244,8 +238,7 @@ export default {
                 `INSERT OR IGNORE INTO customers (phone, name, email, verified)
                  VALUES (?, '', '', 0)`
               ).bind(from).run();
-    }
-    catch (error) {
+            } catch (error) {
               console.error(`Error processing image (mediaId: ${mediaId}):`, error);
               await env.DB.prepare(
                 `INSERT OR IGNORE INTO messages (from_number, body, tag, timestamp, direction)
@@ -279,12 +272,15 @@ export default {
             await sendWhatsAppMessage(from, "Sorry, we couldn't process your document. Please try sending it again.", env);
           } else {
             try {
-        // logic here
-      } catch (error) {
-        console.error('Error:', error);
-      } finally {
-        return Response.json({ ok: true });
-      }
+              const mediaApi = `https://graph.facebook.com/v22.0/${mediaId}`;
+              const mediaMeta = await fetch(mediaApi, {
+                headers: {
+                  Authorization: `Bearer ${env.WHATSAPP_TOKEN}`,
+                  'User-Agent': 'curl/7.64.1'
+                }
+              });
+              if (!mediaMeta.ok) {
+                console.error(`Failed to fetch document metadata: ${mediaMeta.status} ${mediaMeta.statusText}`);
                 throw new Error(`Document metadata fetch failed: ${mediaMeta.status}`);
               }
               const mediaData = await mediaMeta.json();
@@ -322,8 +318,7 @@ export default {
                 `INSERT OR IGNORE INTO customers (phone, name, email, verified)
                  VALUES (?, '', '', 0)`
               ).bind(from).run();
-    }
-    catch (error) {
+            } catch (error) {
               console.error(`Error processing document (mediaId: ${mediaId}):`, error);
               await env.DB.prepare(
                 `INSERT OR IGNORE INTO messages (from_number, body, tag, timestamp, direction)
@@ -356,12 +351,15 @@ export default {
             await sendWhatsAppMessage(from, "Sorry, we couldn't process your video. Please try sending it again.", env);
           } else {
             try {
-        // logic here
-      } catch (error) {
-        console.error('Error:', error);
-      } finally {
-        return Response.json({ ok: true });
-      }
+              const mediaApi = `https://graph.facebook.com/v22.0/${mediaId}`;
+              const mediaMeta = await fetch(mediaApi, {
+                headers: {
+                  Authorization: `Bearer ${env.WHATSAPP_TOKEN}`,
+                  'User-Agent': 'curl/7.64.1'
+                }
+              });
+              if (!mediaMeta.ok) {
+                console.error(`Failed to fetch video metadata: ${mediaMeta.status} ${mediaMeta.statusText}`);
                 throw new Error(`Video metadata fetch failed: ${mediaMeta.status}`);
               }
               const mediaData = await mediaMeta.json();
@@ -399,8 +397,7 @@ export default {
                 `INSERT OR IGNORE INTO customers (phone, name, email, verified)
                  VALUES (?, '', '', 0)`
               ).bind(from).run();
-    }
-    catch (error) {
+            } catch (error) {
               console.error(`Error processing video (mediaId: ${mediaId}):`, error);
               await env.DB.prepare(
                 `INSERT OR IGNORE INTO messages (from_number, body, tag, timestamp, direction)
@@ -438,17 +435,29 @@ export default {
         }
 
         // Lookup customer in our own table
-        customer = await env.DB.prepare(`SELECT * FROM customers WHERE phone = ?`).bind(from).first();
+        let customer = await env.DB.prepare(`SELECT name, verified, email FROM customers WHERE phone = ?`).bind(from).first();
+        // Fallback for missing columns
+        if (customer) {
+          if (typeof customer.verified === 'undefined') {
+            customer.verified = 0;
+          }
+          if (typeof customer.email === 'undefined') {
+            customer.email = '';
+          }
+        }
 
         // Onboarding state from DB
         let state = null;
         try {
-        // logic here
-      } catch (error) {
-        console.error('Error:', error);
-      } finally {
-        return Response.json({ ok: true });
-      }
+          let st = await env.DB.prepare(`SELECT * FROM onboarding WHERE phone = ?`).bind(from).first();
+          state = st?.step || null;
+        } catch { state = null; }
+
+        // --- Onboarding and lead flow ---
+        if (!customer || customer.verified !== 1) {
+          // Check leads office hours
+          const { isOpen, openTime } = await isDepartmentOpen(env, 'leads', now);
+          if (!isOpen) {
             const reply = `Unfortunately, our leads department is now closed and will be available again at ${openTime}. Your message has been received, and one of our agents will reply once we are available again.`;
             await env.DB.prepare(
               `INSERT OR IGNORE INTO messages (from_number, body, tag, timestamp, direction, media_url, location_json)
@@ -560,7 +569,15 @@ export default {
 
           // Waiting for verification by admin: only check if admin has verified
           if (state === "wait_verify") {
-            customer = await env.DB.prepare(`SELECT * FROM customers WHERE phone = ?`).bind(from).first();
+            customer = await env.DB.prepare(`SELECT name, verified, email FROM customers WHERE phone = ?`).bind(from).first();
+            if (customer) {
+              if (typeof customer.verified === 'undefined') {
+                customer.verified = 0;
+              }
+              if (typeof customer.email === 'undefined') {
+                customer.email = '';
+              }
+            }
             if (customer && customer.verified === 1) {
               await env.DB.prepare(`DELETE FROM onboarding WHERE phone = ?`).bind(from).run();
               const msg = `Hi, you have been verified by our admin team.\nHow can we help you?\n1. Support\n2. Sales\n3. Accounts`;
@@ -705,10 +722,30 @@ export default {
           }
 
           // Check for greetings
-if (greetings.includes(lc)) {
-  const msg = `Hello ${firstName}! How can we help you today?\n1. Support\n2. Sales\n3. Accounts`;
-  await sendWhatsAppMessage(from, msg, env);
-  return new Response("Greeting sent");
+          if (greetings.includes(lc)) {
+            const firstName = (customer.name || "").split(" ")[0] || "";
+            // Check for open session
+            const openSession = await env.DB.prepare(
+              `SELECT ticket, department FROM chatsessions WHERE phone = ? AND end_ts IS NULL ORDER BY start_ts DESC LIMIT 1`
+            ).bind(from).first();
+            console.log(`Checking open session for ${from}:`, openSession);
+            if (openSession) {
+              const { isOpen, openTime } = await isDepartmentOpen(env, openSession.department, now);
+              if (!isOpen) {
+                await env.DB.prepare(
+                  `INSERT OR IGNORE INTO messages (from_number, body, tag, timestamp, direction)
+                   VALUES (?, ?, ?, ?, 'incoming')`
+                ).bind(from, userInput, `${openSession.department}_pending`, now).run();
+                await sendClosureMessageWithButton(from, openSession.department, openTime, openSession.ticket, env);
+                return Response.json({ ok: true });
+              }
+              const reply = `You are currently in a chat session with our ${openSession.department} department (Ref: ${openSession.ticket}). Reply with your message to continue, or type CLOSE to end this session and choose a different department.`;
+              await sendWhatsAppMessage(from, reply, env);
+              await env.DB.prepare(
+                `INSERT OR IGNORE INTO messages (from_number, body, tag, timestamp, direction)
+                 VALUES (?, ?, 'system', ?, 'outgoing')`
+              ).bind(from, reply, now).run();
+              return Response.json({ ok: true });
             } else {
               const reply =
                 `Hello ${firstName}! How can we help you today?\n` +
@@ -788,10 +825,9 @@ if (greetings.includes(lc)) {
 
         // --- fallback ---
         return Response.json({ ok: true });
-    }
-    catch (error) {
+      } catch (error) {
         console.error('Webhook error:', error);
-
+        return new Response('Internal server error', { status: 500 });
       }
     }
 
@@ -1457,12 +1493,15 @@ if (greetings.includes(lc)) {
         }
 
         try {
-        // logic here
-      } catch (error) {
-        console.error('Error:', error);
-      } finally {
-        return Response.json({ ok: true });
-      }
+          await env.DB.prepare(`
+            INSERT INTO customers (status, customer_id, name, phone, street, zip_code, city, payment_method, balance, labels)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(customer_id) DO UPDATE SET
+              status=excluded.status,
+              name=excluded.name,
+              phone=excluded.phone,
+              street=excluded.street,
+              zip_code=excluded.zip_code,
               city=excluded.city,
               payment_method=excluded.payment_method,
               balance=excluded.balance,
