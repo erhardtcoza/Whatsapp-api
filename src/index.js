@@ -717,14 +717,10 @@ export default {
           }
 
           // Check for greetings
-          if (greetings.includes(lc)) {
-  const msg = `Hello ${firstName}! How can we help you today?
-1. Support
-2. Sales
-3. Accounts`;
+if (greetings.includes(lc)) {
+  const msg = `Hello ${firstName}! How can we help you today?\n1. Support\n2. Sales\n3. Accounts`;
   await sendWhatsAppMessage(from, msg, env);
   return new Response("Greeting sent");
-});
             } else {
               const reply =
                 `Hello ${firstName}! How can we help you today?\n` +
