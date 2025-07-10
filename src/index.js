@@ -317,9 +317,9 @@ export default {
                VALUES (?, ?, 'lead', ?, 'incoming')`
             ).bind(from, "[Video: No mediaId]", now).run();
             await env.DB.prepare(
-                `INSERT OR IGNORE INTO customers (phone, name, email, verified)
-                 VALUES (?, '', '', 0)`
-              ).bind(from).run();
+              `INSERT OR IGNORE INTO customers (phone, name, email, verified)
+               VALUES (?, '', '', 0)`
+            ).bind(from).run();
             await sendWhatsAppMessage(from, "Sorry, we couldn't process your video. Please try sending it again.", env);
           } else {
             try {
@@ -575,7 +575,7 @@ export default {
           if (lc === "close") {
             const openSession = await env.DB.prepare(
               `SELECT ticket, department FROM chatsessions WHERE phone = ? AND end_ts IS NULL ORDER BY start_ts DESC LIMIT 1`
-            ).bind(from).run();
+            ).bind(from).first();
             if (openSession) {
               await env.DB.prepare(
                 `UPDATE chatsessions SET end_ts = ? WHERE ticket = ?`
@@ -598,41 +598,41 @@ export default {
             }
           }
 
-// Check for Emergency button ---
-if (lc === "emergency") {
-  const openSession = await env.DB.prepare(
-    `SELECT ticket, department FROM chatsessions WHERE phone = ? AND end_ts IS NULL ORDER BY start_ts DESC LIMIT 1`
-  ).bind(from).first();
-  if (openSession) {
-    // Close existing session
-    await env.DB.prepare(
-      `UPDATE chatsessions SET end_ts = ? WHERE ticket = ?`
-    ).bind(now, openSession.ticket).run();
-  }
+          // Check for Emergency button ---
+          if (lc === "emergency") {
+            const openSession = await env.DB.prepare(
+              `SELECT ticket, department FROM chatsessions WHERE phone = ? AND end_ts IS NULL ORDER BY start_ts DESC LIMIT 1`
+            ).bind(from).first();
+            if (openSession) {
+              // Close existing session
+              await env.DB.prepare(
+                `UPDATE chatsessions SET end_ts = ? WHERE ticket = ?`
+              ).bind(now, openSession.ticket).run();
+            }
 
-  // Create new session with Support
-  const today = new Date(now);
-  const yyyymmdd = today.toISOString().slice(0, 10).replace(/-/g, '');
-  const dayStart = Date.parse(today.toISOString().slice(0, 10) + "T00:00:00Z");
-  const dayEnd = Date.parse(today.toISOString().slice(0, 10) + "T23:59:59Z");
-  const { count = 0 } = await env.DB.prepare(
-    `SELECT COUNT(*) AS count FROM chatsessions WHERE start_ts BETWEEN ? AND ?`
-  ).bind(dayStart, dayEnd).first();
-  const session_id = `${yyyymmdd}${String(count + 1).padStart(3, '0')}`;
-  await env.DB.prepare(
-    `INSERT INTO chatsessions (phone, ticket, department, start_ts)
-     VALUES (?, ?, ?, ?)`
-  ).bind(from, session_id, 'support', now).run();
-  const reply = `Your chat session has been switched to our Support department (Ref: ${session_id}). Please reply with your message.`;
-  await sendWhatsAppMessage(from, reply, env);
-  await env.DB.prepare(
-    `INSERT OR IGNORE INTO messages (from_number, body, tag, timestamp, direction)
-     VALUES (?, ?, ?, ?, 'outgoing')`
-  ).bind(from, reply, 'support', now).run();
-  return Response.json({ ok: true });
-}
-          
-        // Check for Switch command ---
+            // Create new session with Support
+            const today = new Date(now);
+            const yyyymmdd = today.toISOString().slice(0, 10).replace(/-/g, '');
+            const dayStart = Date.parse(today.toISOString().slice(0, 10) + "T00:00:00Z");
+            const dayEnd = Date.parse(today.toISOString().slice(0, 10) + "T23:59:59Z");
+            const { count = 0 } = await env.DB.prepare(
+              `SELECT COUNT(*) AS count FROM chatsessions WHERE start_ts BETWEEN ? AND ?`
+            ).bind(dayStart, dayEnd).first();
+            const session_id = `${yyyymmdd}${String(count + 1).padStart(3, '0')}`;
+            await env.DB.prepare(
+              `INSERT INTO chatsessions (phone, ticket, department, start_ts)
+               VALUES (?, ?, ?, ?)`
+            ).bind(from, session_id, 'support', now).run();
+            const reply = `Your chat session has been switched to our Support department (Ref: ${session_id}). Please reply with your message.`;
+            await sendWhatsAppMessage(from, reply, env);
+            await env.DB.prepare(
+              `INSERT OR IGNORE INTO messages (from_number, body, tag, timestamp, direction)
+               VALUES (?, ?, ?, ?, 'outgoing')`
+            ).bind(from, reply, 'support', now).run();
+            return Response.json({ ok: true });
+          }
+
+          // Check for Switch command ---
           if (lc.startsWith("switch ")) {
             const requestedDept = lc.slice(7).trim().toLowerCase();
             const validDepts = { "support": "Support", "sales": "Sales", "accounts": "Accounts" };
@@ -667,7 +667,7 @@ if (lc === "emergency") {
             ).bind(from).first();
             if (openSession) {
               await env.DB.prepare(
-                `UPDATE tsessions SET end_ts = ? WHERE ticket = ?`
+                `UPDATE chatsessions SET end_ts = ? WHERE ticket = ?`
               ).bind(now, openSession.ticket).run();
             }
 
@@ -788,7 +788,7 @@ if (lc === "emergency") {
           }
 
           await env.DB.prepare(
-            `INSERT OR IGNORE INTO messages (from_number, body, tag, timestamp, direction, media_url, location_json)
+            `INSERT OR IGNORE INTO messages (from_number, kbody, tag, timestamp, direction, media_url, location_json)
              VALUES (?, ?, ?, ?, 'incoming', ?, ?)`
           ).bind(from, userInput, msgTag, now, media_url, location_json).run();
 
@@ -1116,13 +1116,10 @@ if (lc === "emergency") {
           MAX(m.timestamp) AS last_ts,
           (SELECT body FROM messages m2
             WHERE m2.from_number=m.from_number
-            ORDER BY m2
-.timestamp DESC LIMIT 1
-        ) AS last_message
+            ORDER BY m2.timestamp DESC LIMIT 1) AS last_message
         FROM messages m
         LEFT JOIN customers c ON c.phone=m.from_number
-        WHERE m.tag='support' AND (m.closed IS NULL OR m.closed=0
-        )
+        WHERE m.tag='support' AND (m.closed IS NULL OR m.closed=0)
         GROUP BY m.from_number
         ORDER BY last_ts DESC
         LIMIT 200
@@ -1138,13 +1135,10 @@ if (lc === "emergency") {
           MAX(m.timestamp) AS last_ts,
           (SELECT body FROM messages m2
             WHERE m2.from_number=m.from_number
-            ORDER BY m2
-          .timestamp DESC LIMIT 1
-          ) AS last_message
+            ORDER BY m2.timestamp DESC LIMIT 1) AS last_message
         FROM messages m
         LEFT JOIN customers c ON c.phone=m.from_number
-        WHERE m.tag LIKE accounts-chats
-        AND (m.closed IS NULL OR m.closed=0)
+        WHERE m.tag='accounts' AND (m.closed IS NULL OR m.closed=0)
         GROUP BY m.from_number
         ORDER BY last_ts DESC
         LIMIT 200
@@ -1160,14 +1154,13 @@ if (lc === "emergency") {
           MAX(m.timestamp) AS last_ts,
           (SELECT body FROM messages m2
             WHERE m2.from_number=m.from_number
-            ORDER BY m2.timestamp DESC LIMIT 1
-          ) AS last_message
+            ORDER BY m2.timestamp DESC LIMIT 1) AS last_message
         FROM messages m
         LEFT JOIN customers c ON c.phone=m.from_number
         WHERE m.tag='sales' AND (m.closed IS NULL OR m.closed=0)
         GROUP BY m.from_number
-        ORDER BY m2
-        DESC LIMIT 200
+        ORDER BY last_ts DESC
+        LIMIT 200
       `;
       const { results } = await env.DB.prepare(sql).all();
       return withCORS(Response.json(results));
@@ -1181,12 +1174,10 @@ if (lc === "emergency") {
           c.name,
           c.email,
           c.customer_id,
-          c.verified_status
-        FROM
-        customers c
-        WHERE c.verified_status = 0
-        ORDER BY
-          c.phone DESC
+          c.verified AS verified_status
+        FROM customers c
+        WHERE c.verified = 0
+        ORDER BY c.phone DESC
         LIMIT 200
       `;
       const { results } = await env.DB.prepare(sql).all();
@@ -1196,16 +1187,10 @@ if (lc === "emergency") {
     // --- API: Sync customers from messages ---
     if (url.pathname === "/api/customers-sync" && request.method === "POST") {
       const syncSql = `
-        INSERT OR IGNORE INTO customers (phone, name, email, verified_status
-        )
+        INSERT OR IGNORE INTO customers (phone, name, email, verified)
         SELECT DISTINCT from_number, '', '', 0
-        FROM
-        messages
-        WHERE
-          from_number NOT IN (SELECT
-          phone
-          FROM
-             customers c)
+        FROM messages
+        WHERE from_number NOT IN (SELECT phone FROM customers)
       `;
       await env.DB.prepare(syncSql).run();
       return withCORS(Response.json({ ok: true, message: "Synced." }));
@@ -1221,8 +1206,7 @@ if (lc === "emergency") {
     if (url.pathname === "/api/add-user" && request.method === "POST") {
       const { username, password, role } = await request.json();
       if (!username || !password || !role)
-        return withCORS(new Response(
-          "Missing fields", { status: 400 }));
+        return withCORS(new Response("Missing fields", { status: 400 }));
       await env.DB.prepare(
         `INSERT INTO admins (username, password, role) VALUES (?, ?, ?)`
       ).bind(username, password, role).run();
@@ -1230,35 +1214,30 @@ if (lc === "emergency") {
     }
     if (url.pathname === "/api/delete-user" && request.method === "POST") {
       const { id } = await request.json();
-      if (!id) return withCORS(new Response(
-        "Missing user_id", { status: 400 }));
-      await env.DB.prepare(
-        `DELETE FROM admins WHERE id=?`)
-      .bind(id).run();
+      if (!id) return withCORS(new Response("Missing user_id", { status: 400 }));
+      await env.DB.prepare(`DELETE FROM admins WHERE id=?`).bind(id).run();
       return withCORS(Response.json({ ok: true }));
     }
 
     // --- API: Office hours ---
     if (url.pathname === "/api/office-hours" && request.method === "GET") {
-      const { results } = await env.DB.prepare(
-        `SELECT * FROM office_hours
-      ).all();
+      const { results } = await env.DB.prepare(`SELECT * FROM office_hours`).all();
       return withCORS(Response.json(results));
     }
-if (url.pathname === "/api/office-hours" && request.method === "POST") {
-  const { tag, day, agency, open_time, close_time, closed } = await request.json();
-  if (!tag || !day)
-    return withCORS(new Response("Missing fields", { status: 400 }));
-  await env.DB.prepare(`
-    INSERT INTO office_hours (tag, day, open_time, close_time, closed)
-    VALUES (?, ?, ?, ?, ?)
-    ON CONFLICT(tag, day) DO UPDATE SET
-      open_time = excluded.open_time,
-      close_time = excluded.close_time,
-      closed = excluded.closed
-  `).bind(tag, day, open_time, close_time, closed ? 1 : 0).run();
-  return withCORS(Response.json({ ok: true }));
-}
+    if (url.pathname === "/api/office-hours" && request.method === "POST") {
+      const { tag, day, agency, open_time, close_time, closed } = await request.json();
+      if (!tag || !day)
+        return withCORS(new Response("Missing fields", { status: 400 }));
+      await env.DB.prepare(`
+        INSERT INTO office_hours (tag, day, open_time, close_time, closed)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(tag, day) DO UPDATE SET
+          open_time = excluded.open_time,
+          close_time = excluded.close_time,
+          closed = excluded.closed
+      `).bind(tag, day, open_time, close_time, closed ? 1 : 0).run();
+      return withCORS(Response.json({ ok: true }));
+    }
 
     // --- API: Global office open/close ---
     if (url.pathname === "/api/office-global" && request.method === "GET") {
@@ -1320,8 +1299,7 @@ if (url.pathname === "/api/office-hours" && request.method === "POST") {
     }
     if (url.pathname === "/api/flows/delete" && request.method === "POST") {
       const { id } = await request.json();
-      if (!id) return withCORS(new Response(
-        "Missing flow id", { status: 400 }));
+      if (!id) return withCORS(new Response("Missing flow id", { status: 400 }));
       // Cascade delete steps
       await env.DB.prepare(
         `DELETE FROM flow_steps WHERE flow_id = ?`
@@ -1335,8 +1313,7 @@ if (url.pathname === "/api/office-hours" && request.method === "POST") {
     // --- API: Flow-Steps CRUD ---
     if (url.pathname === "/api/flow-steps" && request.method === "GET") {
       const flowId = Number(url.searchParams.get("flow_id") || 0);
-      if (!flowId) return withCORS(new Response(
-        "Missing flow_id", { status: 400 }));
+      if (!flowId) return withCORS(new Response("Missing flow_id", { status: 400 }));
       const { results } = await env.DB.prepare(
         `SELECT * FROM flow_steps WHERE flow_id = ? ORDER BY step_order`
       ).bind(flowId).all();
@@ -1344,13 +1321,12 @@ if (url.pathname === "/api/office-hours" && request.method === "POST") {
     }
     if (url.pathname === "/api/flow-steps" && request.method === "POST") {
       const { id, flow_id, step_order, type, message } = await request.json();
-      if (!flow_id || !type) return withCORS(new Response(
-        "Missing fields", { status: 400 }));
+      if (!flow_id || !type) return withCORS(new Response("Missing fields", { status: 400 }));
       if (id) {
         await env.DB.prepare(
           `UPDATE flow_steps
-              SET step_order = ?, type = ?, message = ?
-            WHERE id = ?`
+           SET step_order = ?, type = ?, message = ?
+           WHERE id = ?`
         ).bind(step_order, type, message, id).run();
       } else {
         await env.DB.prepare(
@@ -1362,8 +1338,7 @@ if (url.pathname === "/api/office-hours" && request.method === "POST") {
     }
     if (url.pathname === "/api/flow-steps/delete" && request.method === "POST") {
       const { id } = await request.json();
-      if (!id) return withCORS(new Response(
-        "Missing step id", { status: 400 }));
+      if (!id) return withCORS(new Response("Missing step id", { status: 400 }));
       await env.DB.prepare(
         `DELETE FROM flow_steps WHERE id = ?`
       ).bind(id).run();
@@ -1417,8 +1392,7 @@ if (url.pathname === "/api/office-hours" && request.method === "POST") {
       const tpl = await env.DB.prepare(
         "SELECT * FROM templates WHERE id=?"
       ).bind(id).first();
-      if (!tpl) return withCORS(new Response(
-        "Not found", { status: 404 }));
+      if (!tpl) return withCORS(new Response("Not found", { status: 404 }));
 
       // Compose the API call payload
       const body = {
@@ -1455,16 +1429,14 @@ if (url.pathname === "/api/office-hours" && request.method === "POST") {
         return withCORS(Response.json({ ok: true, result: apiResult }));
       } else {
         // Error: Save error to db/log if desired
-        return withCORS(Response.json(
-          { ok: false, error: apiResult }, { status: 400 }));
+        return withCORS(Response.json({ ok: false, error: apiResult }, { status: 400 }));
       }
     }
 
     // Fetch WhatsApp template status from Meta
     if (url.pathname === "/api/templates/status" && request.method === "GET") {
       const name = url.searchParams.get("name");
-      if (!name) return withCORS(new Response(
-        "Missing template name", { status: 400 }));
+      if (!name) return withCORS(new Response("Missing template name", { status: 400 }));
 
       const apiResp = await fetch(
         `https://graph.facebook.com/v19.0/${env.BUSINESS_ID}/message_templates?name=${encodeURIComponent(name)}`,
