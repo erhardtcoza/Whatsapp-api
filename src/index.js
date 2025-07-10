@@ -149,6 +149,18 @@ export default {
         let media_url = null;
         let location_json = null;
 
+        // Lookup customer and send greeting if verified
+        let customer = await env.DB.prepare(`SELECT name, verified FROM customers WHERE phone = ?`).bind(from).first();
+        if (customer && customer.verified === 1) {
+          const firstName = (customer.name || "").split(" ")[0] || "";
+          const greeting = `Hello ${firstName}, welcome back! How can we assist you today?`;
+          await sendWhatsAppMessage(from, greeting, env);
+          await env.DB.prepare(
+            `INSERT OR IGNORE INTO messages (from_number, body, tag, timestamp, direction)
+             VALUES (?, ?, 'system', ?, 'outgoing')`
+          ).bind(from, greeting, now).run();
+        }
+
         // Check for emergency closure
         const globalOffice = await env.DB.prepare(
           `SELECT closed, message FROM office_global WHERE id = 1`
