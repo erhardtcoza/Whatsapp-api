@@ -1,4 +1,4 @@
-name = 'whatsapp-api'
+name = "whatsapp-api"
 main = "src/index.js"
 compatibility_date = "2024-06-01"
 
@@ -13,8 +13,8 @@ bucket_name = "vinet-whatsapp-images"
 
 # KV for static assets (admin panel)
 [site]
-bucket = "./public"
-entry-point = "src"
+bucket = "./public"  # <-- keep this
+# entry-point = "src"  <-- ❌ remove this line
 
 [[kv_namespaces]]
 binding = "KV_BINDING"
@@ -28,6 +28,3 @@ BUSINESS_ID = "416413345495591"
 
 [observability.logs]
 enabled = true
-
-
-
