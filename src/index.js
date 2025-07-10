@@ -149,6 +149,18 @@ export default {
         let media_url = null;
         let location_json = null;
 
+        // Lookup customer and send greeting if verified
+        const customer = await env.DB.prepare(`SELECT name, verified FROM customers WHERE phone = ?`).bind(from).first();
+        if (customer && customer.verified === 1) {
+          const firstName = (customer.name || "").split(" ")[0] || "";
+          const greeting = `Hello ${firstName}, welcome back! How can we assist you today?`;
+          await sendWhatsAppMessage(from, greeting, env);
+          await env.DB.prepare(
+            `INSERT OR IGNORE INTO messages (from_number, body, tag, timestamp, direction)
+             VALUES (?, ?, 'system', ?, 'outgoing')`
+          ).bind(from, greeting, now).run();
+        }
+
         // Check for emergency closure
         const globalOffice = await env.DB.prepare(
           `SELECT closed, message FROM office_global WHERE id = 1`
@@ -1016,6 +1028,7 @@ export default {
     // --- API: Send message to client (admin) ---
     if (url.pathname === "/api/send-message" && request.method === "POST") {
       const { phone, body } = await request.json();
+      if (!phone || !body) return withCORS(new Response("Missing phone or body", { status: 400 }));
       await sendWhatsAppMessage(phone, body, env);
       await env.DB.prepare(
         `INSERT OR IGNORE INTO messages (from_number, body, tag, timestamp, direction)
@@ -1056,12 +1069,12 @@ export default {
       return withCORS(Response.json({ ok: true }));
     }
 
-    // --- API: Get customers (for Send Message page) ---
+    // --- API: Get all customers (for Send Message page and Customers page) ---
     if (url.pathname === "/api/customers" && request.method === "GET") {
       const { results } = await env.DB.prepare(
-        `SELECT phone, name, customer_id, email
-           FROM customers
-          ORDER BY name`
+        `SELECT phone, name, customer_id, email, verified, status, street, zip_code, city, payment_method, balance, labels
+         FROM customers
+         ORDER BY name`
       ).all();
       return withCORS(Response.json(results));
     }
@@ -1234,7 +1247,7 @@ export default {
         return withCORS(new Response("Missing fields", { status: 400 }));
       await env.DB.prepare(`
         INSERT INTO office_hours (tag, day, open_time, close_time, closed)
-        VALUES (?, ?, ?, ?, ?)
+        VALUES ?, ?, ?, ?, ?)
         ON CONFLICT(tag, day) DO UPDATE SET
           open_time = excluded.open_time,
           close_time = excluded.close_time,
@@ -1247,7 +1260,7 @@ export default {
     if (url.pathname === "/api/office-global" && request.method === "GET") {
       const { results } = await env.DB.prepare(`SELECT * FROM office_global LIMIT 1`).all();
       return withCORS(Response.json(results[0] || { closed: 0, message: "" }));
-    }
+      }
     if (url.pathname === "/api/office-global" && request.method === "POST") {
       const { closed, message } = await request.json();
       await env.DB.prepare(
@@ -1432,87 +1445,84 @@ export default {
       return withCORS(Response.json(apiResult));
     }
 
-// --- API: List all clients with frontend-friendly column names ---
-if (url.pathname === "/api/clients" && request.method === "GET") {
-  const sql = `
-    SELECT
-      status AS Status,
-      customer_id AS ID,
-      name AS "Full name",
-      phone AS "Phone number",
-      street AS Street,
-      zip_code AS "ZIP code",
-      city AS City,
-      payment_method AS "Payment Method",
-      balance AS "Account balance",
-      labels AS Labels
-    FROM customers
-    ORDER BY name
-  `;
-  const { results } = await env.DB.prepare(sql).all();
-  return withCORS(Response.json(results));
-}
-
-    
-if (url.pathname === "/api/upload-clients" && request.method === "POST") {
-  const { rows } = await request.json();
-  let replaced = 0;
-  const failed = [];
-
-  const requiredFields = [
-    "Status", "ID", "Full name", "Phone number",
-    "Street", "ZIP code", "City", "Payment Method",
-    "Account balance", "Labels"
-  ];
-
-  for (let i = 0; i < rows.length; i++) {
-    const row = rows[i];
-
-    // Check for required fields
-    const missing = requiredFields.filter(f => !(f in row));
-    if (missing.length > 0) {
-      failed.push({ idx: i + 1, reason: `Missing fields: ${missing.join(", ")}`, row });
-      continue;
+    // --- API: List all clients with frontend-friendly column names ---
+    if (url.pathname === "/api/clients" && request.method === "GET") {
+      const sql = `
+        SELECT
+          status AS Status,
+          customer_id AS ID,
+          name AS "Full name",
+          phone AS "Phone number",
+          street AS Street,
+          zip_code AS "ZIP code",
+          city AS City,
+          payment_method AS "Payment Method",
+          balance AS "Account balance",
+          labels AS Labels
+        FROM customers
+        ORDER BY name
+      `;
+      const { results } = await env.DB.prepare(sql).all();
+      return withCORS(Response.json(results));
     }
 
-    try {
-      await env.DB.prepare(`
-        INSERT INTO customers (status, customer_id, name, phone, street, zip_code, city, payment_method, balance, labels)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(customer_id) DO UPDATE SET
-          status=excluded.status,
-          name=excluded.name,
-          phone=excluded.phone,
-          street=excluded.street,
-          zip_code=excluded.zip_code,
-          city=excluded.city,
-          payment_method=excluded.payment_method,
-          balance=excluded.balance,
-          labels=excluded.labels
-      `).bind(
-        row["Status"], row["ID"], row["Full name"], row["Phone number"],
-        row["Street"], row["ZIP code"], row["City"], row["Payment Method"],
-        row["Account balance"], row["Labels"]
-      ).run();
-      replaced += 1;
-    } catch (err) {
-      failed.push({ idx: i + 1, reason: String(err), row });
-      console.error("Row insert/update failed", { row, error: err });
+    if (url.pathname === "/api/upload-clients" && request.method === "POST") {
+      const { rows } = await request.json();
+      let replaced = 0;
+      const failed = [];
+
+      const requiredFields = [
+        "Status", "ID", "Full name", "Phone number",
+        "Street", "ZIP code", "City", "Payment Method",
+        "Account balance", "Labels"
+      ];
+
+      for (let i = 0; i < rows.length; i++) {
+        const row = rows[i];
+
+        // Check for required fields
+        const missing = requiredFields.filter(f => !(f in row));
+        if (missing.length > 0) {
+          failed.push({ idx: i + 1, reason: `Missing fields: ${missing.join(", ")}`, row });
+          continue;
+        }
+
+        try {
+          await env.DB.prepare(`
+            INSERT INTO customers (status, customer_id, name, phone, street, zip_code, city, payment_method, balance, labels)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(customer_id) DO UPDATE SET
+              status=excluded.status,
+              name=excluded.name,
+              phone=excluded.phone,
+              street=excluded.street,
+              zip_code=excluded.zip_code,
+              city=excluded.city,
+              payment_method=excluded.payment_method,
+              balance=excluded.balance,
+              labels=excluded.labels
+          `).bind(
+            row["Status"], row["ID"], row["Full name"], row["Phone number"],
+            row["Street"], row["ZIP code"], row["City"], row["Payment Method"],
+            row["Account balance"], row["Labels"]
+          ).run();
+          replaced += 1;
+        } catch (err) {
+          failed.push({ idx: i + 1, reason: String(err), row });
+          console.error("Row insert/update failed", { row, error: err });
+        }
+      }
+
+      // Respond with detailed result
+      return withCORS(Response.json({
+        replaced,
+        failed_rows: failed,
+        message: failed.length
+          ? `Upload complete: ${replaced} clients replaced. ${failed.length} row(s) failed.`
+          : `Upload successful: ${replaced} clients replaced.`
+      }));
     }
-  }
 
-  // Respond with detailed result
-  return withCORS(Response.json({
-    replaced,
-    failed_rows: failed,
-    message: failed.length
-      ? `Upload complete: ${replaced} clients replaced. ${failed.length} row(s) failed.`
-      : `Upload successful: ${replaced} clients replaced.`
-  }));
-}
-
-    
-    
     // --- Serve static HTML (dashboard SPA) ---
     if (url.pathname === "/" || url.pathname === "/index.html") {
       if (env.ASSETS) {
