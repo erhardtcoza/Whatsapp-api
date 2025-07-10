@@ -718,29 +718,13 @@ export default {
 
           // Check for greetings
           if (greetings.includes(lc)) {
-            const firstName = (customer.name || "").split(" ")[0] || "";
-            // Check for open session
-            const openSession = await env.DB.prepare(
-              `SELECT ticket, department FROM chatsessions WHERE phone = ? AND end_ts IS NULL ORDER BY start_ts DESC LIMIT 1`
-            ).bind(from).first();
-            console.log(`Checking open session for ${from}:`, openSession);
-            if (openSession) {
-              const { isOpen, openTime } = await isDepartmentOpen(env, openSession.department, now);
-              if (!isOpen) {
-                await env.DB.prepare(
-                  `INSERT OR IGNORE INTO messages (from_number, body, tag, timestamp, direction)
-                   VALUES (?, ?, ?, ?, 'incoming')`
-                ).bind(from, userInput, `${openSession.department}_pending`, now).run();
-                await sendClosureMessageWithButton(from, openSession.department, openTime, openSession.ticket, env);
-                return Response.json({ ok: true });
-              }
-              const reply = `You are currently in a chat session with our ${openSession.department} department (Ref: ${openSession.ticket}). Reply with your message to continue, or type CLOSE to end this session and choose a different department.`;
-              await sendWhatsAppMessage(from, reply, env);
-              await env.DB.prepare(
-                `INSERT OR IGNORE INTO messages (from_number, body, tag, timestamp, direction)
-                 VALUES (?, ?, 'system', ?, 'outgoing')`
-              ).bind(from, reply, now).run();
-              return Response.json({ ok: true });
+  const msg = `Hello ${firstName}! How can we help you today?
+1. Support
+2. Sales
+3. Accounts`;
+  await sendWhatsAppMessage(from, msg, env);
+  return new Response("Greeting sent");
+});
             } else {
               const reply =
                 `Hello ${firstName}! How can we help you today?\n` +
