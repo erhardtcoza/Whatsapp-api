@@ -799,10 +799,10 @@ if (greetings.includes(lc)) {
         }
 
         // --- fallback ---
-        return Response.json({ ok: true });
+
       } catch (error) {
         console.error('Webhook error:', error);
-
+        return Response.json({ ok: true });
       }
     }
 
