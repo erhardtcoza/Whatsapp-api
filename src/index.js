@@ -787,7 +787,7 @@ export default {
               await sendClosureMessageWithButton(from, deptTag, openTime, session_id, env);
               return Response.json({ ok: true });
             }
-            const ack = `Thank you, we have created a chat session with our ${deptTag} department: Your ref is ${session_id}, please reply with your message.`;
+            const ack = `Thank you, we have created a chat session with our ${deptTag} department: Your ref is ${session_id}, please reply with your message. To CLOSE the chat session, reply with CLOSE and we will close the chat.`;
             await sendWhatsAppMessage(from, ack, env);
             await env.DB.prepare(
               `INSERT OR IGNORE INTO messages (from_number, body, tag, timestamp, direction)
