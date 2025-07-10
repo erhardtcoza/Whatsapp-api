@@ -1,34 +1,41 @@
-import { handleWebhook } from "./whatsapp.js";
-import { handleAdminRequest } from "./admin.js";
-import { handleApiRequest } from "./api.js";
-import { serveStaticAsset } from "@cloudflare/kv-asset-handler";
-import { withCORS } from "./utils/cors.js";
+// src/index.js
+import { handleWhatsAppWebhook } from "./routes/whatsapp.js";
+import { handleAdminApi } from "./routes/admin.js";
+import { handleGeneralApi } from "./routes/api.js";
+import { handleCORS } from "./utils/cors.js";
 
+// Main Worker entry point
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
-    const pathname = url.pathname;
+    const { pathname } = url;
 
-    // WhatsApp Webhook
-    if (pathname.startsWith("/webhook")) {
-      return handleWebhook(request, env, ctx);
+    // Preflight CORS handling
+    if (request.method === "OPTIONS") {
+      return handleCORS(request);
     }
 
-    // Admin API
-    if (pathname.startsWith("/admin")) {
-      return withCORS(() => handleAdminRequest(request, env), request);
+    // WhatsApp webhook
+    if (pathname === "/webhook") {
+      return handleWhatsAppWebhook(request, env, ctx);
     }
 
-    // Public API
-    if (pathname.startsWith("/api")) {
-      return withCORS(() => handleApiRequest(request, env), request);
+    // Admin panel API
+    if (pathname.startsWith("/admin/")) {
+      return handleAdminApi(request, env, ctx);
     }
 
-    // Static Admin Dashboard assets (from Wrangler KV site binding)
-    try {
-      return await serveStaticAsset(request, env, ctx);
-    } catch (err) {
-      return new Response("Not Found", { status: 404 });
+    // General API endpoints
+    if (pathname.startsWith("/api/")) {
+      return handleGeneralApi(request, env, ctx);
     }
-  }
+
+    // Static assets (e.g., /admin frontend)
+    if (env.__STATIC_CONTENT) {
+      return env.__STATIC_CONTENT.fetch(request);
+    }
+
+    // Fallback 404
+    return new Response("Not found", { status: 404 });
+  },
 };
