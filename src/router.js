@@ -1,29 +1,22 @@
-import whatsappRoutes from './routes/whatsapp.js';
-import adminRoutes from './routes/admin.js';
-import apiRoutes from './routes/api.js';
+import { handleWhatsApp } from './routes/whatsapp.js';
+import { handleAdmin } from './routes/admin.js';
+import { handleAPI } from './routes/api.js';
 
-export default {
-  async fetch(request, env, ctx) {
-    const { pathname } = new URL(request.url);
+export async function handleRequest(request, env, ctx) {
+  const url = new URL(request.url);
+  const pathname = url.pathname;
 
-    if (pathname.startsWith('/webhook')) {
-      return whatsappRoutes.fetch(request, env, ctx);
-    }
-
-    if (pathname.startsWith('/admin')) {
-      return adminRoutes.fetch(request, env, ctx);
-    }
-
-    if (pathname.startsWith('/api')) {
-      return apiRoutes.fetch(request, env, ctx);
-    }
-
-    // Static site handling via KV (admin dashboard)
-    if (env.__STATIC_CONTENT) {
-      const asset = await env.__STATIC_CONTENT.fetch(request);
-      if (asset.status !== 404) return asset;
-    }
-
-    return new Response('Not Found', { status: 404 });
+  if (pathname.startsWith("/webhook")) {
+    return handleWhatsApp(request, env, ctx);
   }
-};
+
+  if (pathname.startsWith("/admin")) {
+    return handleAdmin(request, env, ctx);
+  }
+
+  if (pathname.startsWith("/api")) {
+    return handleAPI(request, env, ctx);
+  }
+
+  return new Response("Not Found", { status: 404 });
+}
