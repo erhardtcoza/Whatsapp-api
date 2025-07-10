@@ -1254,11 +1254,11 @@ if (lc === "emergency") {
       `
         INSERT INTO office_hours (tag, day, open_time, close_time, closed)
         VALUES (?, ?, ?, ?, ?)
-        ON CONFLICT(tag, day) DO UPDATE
-        open_time = excluded.open_time,
-        SET close_time = excluded.close_time,
-          closed    = excluded.closed
-      `).bind(tag, day, open_time, close_time, closed ? 1 : 0).run();
+        ON CONFLICT(tag, day) DO UPDATE SET
+  open_time = excluded.open_time,
+  close_time = excluded.close_time,
+  closed = excluded.closed
+          `).bind(tag, day, open_time, close_time, closed ? 1 : 0).run();
       return withCORS(Response.json({ ok: true }));
     }
 
