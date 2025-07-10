@@ -150,7 +150,7 @@ export default {
         let location_json = null;
 
         // Lookup customer and send greeting if verified
-        const customer = await env.DB.prepare(`SELECT name, verified FROM customers WHERE phone = ?`).bind(from).first();
+        let customer = await env.DB.prepare(`SELECT name, verified FROM customers WHERE phone = ?`).bind(from).first();
         if (customer && customer.verified === 1) {
           const firstName = (customer.name || "").split(" ")[0] || "";
           const greeting = `Hello ${firstName}, welcome back! How can we assist you today?`;
@@ -447,7 +447,7 @@ export default {
         }
 
         // Lookup customer in our own table
-        let customer = await env.DB.prepare(`SELECT * FROM customers WHERE phone = ?`).bind(from).first();
+        customer = await env.DB.prepare(`SELECT * FROM customers WHERE phone = ?`).bind(from).first();
 
         // Onboarding state from DB
         let state = null;
@@ -1247,7 +1247,7 @@ export default {
         return withCORS(new Response("Missing fields", { status: 400 }));
       await env.DB.prepare(`
         INSERT INTO office_hours (tag, day, open_time, close_time, closed)
-        VALUES ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?)
         ON CONFLICT(tag, day) DO UPDATE SET
           open_time = excluded.open_time,
           close_time = excluded.close_time,
